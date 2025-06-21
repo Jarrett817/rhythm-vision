@@ -5,11 +5,13 @@ import {
   Audio,
   AudioAnalyser,
   BoxGeometry,
+  BufferAttribute,
 } from 'three';
 import { useEffect, useRef } from 'react';
 import music from '@/assets/test-music.mp3';
 import { getRandomColor } from '@/utils';
 import { OrbitControls } from '@react-three/drei';
+import BackGround from './components/BackGround';
 
 const size = 64;
 
@@ -32,6 +34,10 @@ function ColumnGroups() {
             position={[x, 0, z]}
             scale={[0.5, 0.3, 0.5]}
             rotateY={-angle}
+            userData={{
+              targetScale: 0.3,
+              currentScale: 0.3,
+            }}
           >
             <boxGeometry args={[1, 1, 1]} />
             <meshPhongMaterial
@@ -81,14 +87,6 @@ function Scene() {
 
   return (
     <>
-      {/* 环境光 */}
-      <ambientLight color={0x404040} />
-      {/* 方向光 */}
-      <directionalLight
-        color={0xffffff}
-        intensity={1}
-        position={[10, 10, 10]}
-      />
       <ColumnGroups />
     </>
   );
@@ -97,7 +95,16 @@ function Scene() {
 export default function SoundColumns() {
   return (
     <Canvas>
-      <OrbitControls />
+      {/* 环境光 */}
+      <ambientLight color={0x404040} />
+      {/* 方向光 */}
+      <directionalLight
+        color={0xffffff}
+        intensity={1}
+        position={[10, 10, 10]}
+      />
+      <BackGround />
+      <OrbitControls minDistance={8} maxDistance={40} />
       <Scene />
     </Canvas>
   );
