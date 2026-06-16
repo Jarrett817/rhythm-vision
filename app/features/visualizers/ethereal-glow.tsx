@@ -4,8 +4,11 @@ import { useMemo, useRef } from "react";
 import * as THREE from "three";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
-import { featuresToPalette } from "~/features/visualizers/shared/palette";
+import { AuroraSky } from "~/features/visualizers/shared/aurora-sky";
+import { FlowRibbons, SceneSparkles } from "~/features/visualizers/shared/flow-ribbons";
 import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postprocessing";
+import { SKY_THEMES } from "~/features/visualizers/shared/themes";
+import { featuresToPalette } from "~/features/visualizers/shared/palette";
 
 function AuroraRings({
   featuresRef,
@@ -15,35 +18,36 @@ function AuroraRings({
   intensity: number;
 }) {
   const groupRef = useRef<THREE.Group>(null);
-  const rings = useMemo(() => [3.5, 5, 6.5, 8], []);
+  const rings = useMemo(() => [2.5, 4, 5.5, 7, 8.5, 10], []);
 
   useFrame((state) => {
     const group = groupRef.current;
     if (!group) return;
     const { rms, bass, mid } = featuresRef.current;
     const t = state.clock.elapsedTime;
-    group.rotation.x = Math.sin(t * 0.1) * 0.2;
-    group.rotation.z = t * 0.08;
+    group.rotation.x = Math.sin(t * 0.12) * 0.25;
+    group.rotation.z = t * 0.06;
 
     group.children.forEach((child, i) => {
       const mesh = child as THREE.Mesh;
       const mat = mesh.material as THREE.MeshBasicMaterial;
       const palette = featuresToPalette(featuresRef.current);
       mat.color.set(palette.glow);
-      mat.opacity = 0.08 + rms * 0.2 + Math.sin(t + i) * 0.03;
-      mesh.scale.setScalar(1 + bass * 0.3 * intensity + i * 0.05);
+      mat.opacity = 0.1 + rms * 0.25 + Math.sin(t * 1.2 + i) * 0.06;
+      const pulse = 1 + bass * 0.4 * intensity + Math.sin(t * 0.8 + i * 0.7) * 0.1;
+      mesh.scale.set(pulse, pulse, 1);
     });
   });
 
   return (
     <group ref={groupRef}>
       {rings.map((radius, i) => (
-        <mesh key={i} rotation={[Math.PI / 2 + i * 0.15, 0, i * 0.4]}>
-          <torusGeometry args={[radius, 0.02, 8, 128]} />
+        <mesh key={i} rotation={[Math.PI / 2 + i * 0.12, i * 0.5, i * 0.3]}>
+          <torusGeometry args={[radius, 0.025 + i * 0.003, 12, 128]} />
           <meshBasicMaterial
-            color={`hsl(${260 + i * 20}, 80%, 70%)`}
+            color={`hsl(${260 + i * 18}, 85%, 68%)`}
             transparent
-            opacity={0.15}
+            opacity={0.2}
             blending={THREE.AdditiveBlending}
             depthWrite={false}
           />
@@ -61,77 +65,43 @@ function CoreOrb({
   intensity: number;
 }) {
   const ref = useRef<THREE.Mesh>(null);
-  const color = useRef(new THREE.Color("#c4b5fd"));
+  const innerRef = useRef<THREE.Mesh>(null);
 
   useFrame((state) => {
     const mesh = ref.current;
-    if (!mesh) return;
+    const inner = innerRef.current;
+    if (!mesh || !inner) return;
     const features = featuresRef.current;
     const palette = featuresToPalette(features);
-    color.current.set(palette.glow);
-    const mat = mesh.material as THREE.MeshStandardMaterial;
-    mat.emissive.lerp(color.current, 0.08);
-    mat.emissiveIntensity = 0.6 + features.rms * 2 * intensity;
-    mesh.scale.setScalar(1.2 + features.bass * 0.8 * intensity);
-    mesh.rotation.y = state.clock.elapsedTime * 0.15;
+    mesh.scale.setScalar(1.3 + features.bass * 1 * intensity);
+    mesh.rotation.y = state.clock.elapsedTime * 0.12;
+    mesh.rotation.z = Math.sin(state.clock.elapsedTime * 0.2) * 0.15;
+    inner.rotation.y = -state.clock.elapsedTime * 0.2;
+    inner.scale.setScalar(0.55 + features.treble * 0.3);
+    const mat = inner.material as THREE.MeshBasicMaterial;
+    mat.color.set(palette.accent);
+    mat.opacity = 0.25 + features.rms * 0.4;
   });
 
   return (
-    <Sphere ref={ref} args={[1.2, 64, 64]}>
-      <MeshDistortMaterial
-        color="#a78bfa"
-        emissive="#818cf8"
-        emissiveIntensity={0.8}
-        roughness={0.2}
-        metalness={0.4}
-        distort={0.35}
-        speed={2}
-        transparent
-        opacity={0.9}
-      />
-    </Sphere>
-  );
-}
-
-function StarMist({ featuresRef }: { featuresRef: React.RefObject<AudioFeatures> }) {
-  const ref = useRef<THREE.Points>(null);
-  const positions = useMemo(() => {
-    const arr = new Float32Array(2000 * 3);
-    for (let i = 0; i < arr.length; i++) {
-      const r = 5 + Math.random() * 20;
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      arr[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      arr[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      arr[i * 3 + 2] = r * Math.cos(phi);
-    }
-    return arr;
-  }, []);
-
-  useFrame((state) => {
-    const points = ref.current;
-    if (!points) return;
-    points.rotation.y = state.clock.elapsedTime * 0.03;
-    points.rotation.x = Math.sin(state.clock.elapsedTime * 0.1) * 0.1;
-    const mat = points.material as THREE.PointsMaterial;
-    mat.size = 0.06 + featuresRef.current.mid * 0.08;
-  });
-
-  return (
-    <points ref={ref}>
-      <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
-      </bufferGeometry>
-      <pointsMaterial
-        color="#e9d5ff"
-        size={0.08}
-        transparent
-        opacity={0.5}
-        blending={THREE.AdditiveBlending}
-        depthWrite={false}
-        sizeAttenuation
-      />
-    </points>
+    <group>
+      <Sphere ref={ref} args={[1.4, 64, 64]}>
+        <MeshDistortMaterial
+          color="#a78bfa"
+          emissive="#818cf8"
+          emissiveIntensity={1.2}
+          roughness={0.15}
+          metalness={0.5}
+          distort={0.45}
+          speed={3}
+          transparent
+          opacity={0.88}
+        />
+      </Sphere>
+      <Sphere ref={innerRef} args={[0.8, 32, 32]}>
+        <meshBasicMaterial color="#e9d5ff" transparent opacity={0.3} blending={THREE.AdditiveBlending} depthWrite={false} />
+      </Sphere>
+    </group>
   );
 }
 
@@ -140,20 +110,23 @@ export function EtherealGlowScene({
   intensity,
   onCanvasReady,
 }: VisualizerProps) {
+  const theme = SKY_THEMES.slow;
+
   return (
     <Canvas
       className="size-full"
-      camera={{ position: [0, 0, 10], fov: 55 }}
+      camera={{ position: [0, 0, 11], fov: 55 }}
       gl={{ antialias: true }}
       onCreated={({ gl, scene }) => {
-        scene.fog = new THREE.Fog("#08061a", 12, 40);
+        scene.fog = new THREE.FogExp2(theme.fog, 0.018);
         onCanvasReady?.(gl.domElement);
       }}
     >
-      <color attach="background" args={["#05040f"]} />
-      <ambientLight intensity={0.1} color="#a78bfa" />
-      <pointLight position={[0, 0, 4]} intensity={2} color="#ddd6fe" distance={30} />
-      <StarMist featuresRef={featuresRef} />
+      <AuroraSky featuresRef={featuresRef} theme={theme} />
+      <ambientLight intensity={0.15} color="#a78bfa" />
+      <pointLight position={[0, 0, 5]} intensity={2.5} color="#ddd6fe" distance={35} />
+      <SceneSparkles featuresRef={featuresRef} color={theme.sparkle} count={700} />
+      <FlowRibbons featuresRef={featuresRef} intensity={intensity} baseHue={270} />
       <AuroraRings featuresRef={featuresRef} intensity={intensity} />
       <CoreOrb featuresRef={featuresRef} intensity={intensity} />
       <DreamyPostProcessing intensity={intensity} />

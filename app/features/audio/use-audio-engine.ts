@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AudioEngine } from "~/lib/audio/engine";
 import { extractAudioFeatures } from "~/lib/audio/analyze";
+import { detectMood, type SongMood } from "~/lib/audio/mood";
 import {
   EMPTY_AUDIO_FEATURES,
   type AudioFeatures,
@@ -16,6 +17,8 @@ export function useAudioEngine() {
   const [playing, setPlaying] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
+  const [detectedMood, setDetectedMood] = useState<SongMood>("slow");
+  const moodTimerRef = useRef(0);
 
   useEffect(() => {
     const engine = new AudioEngine();
@@ -35,6 +38,10 @@ export function useAudioEngine() {
         featuresRef.current = next;
         setFeatures(next);
         setPlaying(true);
+        moodTimerRef.current += 1;
+        if (moodTimerRef.current % 30 === 0) {
+          setDetectedMood(detectMood(next));
+        }
       } else {
         setPlaying(false);
       }
@@ -79,6 +86,7 @@ export function useAudioEngine() {
     playing,
     loaded,
     fileName,
+    detectedMood,
     loadFile,
     play,
     pause,

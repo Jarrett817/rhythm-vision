@@ -4,9 +4,12 @@ import * as THREE from "three";
 import type { InstancedMesh } from "three";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
+import { AuroraSky } from "~/features/visualizers/shared/aurora-sky";
+import { FlowRibbons, SceneSparkles } from "~/features/visualizers/shared/flow-ribbons";
 import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postprocessing";
+import { SKY_THEMES } from "~/features/visualizers/shared/themes";
 
-const PETAL_COUNT = 400;
+const PETAL_COUNT = 600;
 
 function Petals({
   featuresRef,
@@ -20,13 +23,14 @@ function Petals({
   const data = useMemo(
     () =>
       Array.from({ length: PETAL_COUNT }, () => ({
-        x: (Math.random() - 0.5) * 30,
-        y: Math.random() * 20,
-        z: (Math.random() - 0.5) * 30,
+        x: (Math.random() - 0.5) * 35,
+        y: Math.random() * 22,
+        z: (Math.random() - 0.5) * 35,
         rot: Math.random() * Math.PI,
-        speed: 0.3 + Math.random() * 0.6,
+        speed: 0.25 + Math.random() * 0.7,
         drift: Math.random() * Math.PI * 2,
-        hue: 320 + Math.random() * 40,
+        hue: 310 + Math.random() * 50,
+        wobble: Math.random() * 2,
       })),
     [],
   );
@@ -36,22 +40,26 @@ function Petals({
     if (!mesh) return;
     const { mid, treble, bass } = featuresRef.current;
     const t = state.clock.elapsedTime;
-    const wind = (mid - 0.3) * 3 * intensity;
+    const wind = (mid + 0.1) * 4 * intensity;
 
     data.forEach((petal, i) => {
-      petal.y -= petal.speed * (0.6 + bass * 0.8) * delta * 2;
-      petal.x += Math.sin(t * 0.5 + petal.drift) * wind * delta;
-      petal.rot += delta * (0.5 + treble);
+      petal.y -= petal.speed * (0.5 + bass * 0.9) * delta * 2.5;
+      petal.x +=
+        (Math.sin(t * 0.6 + petal.drift) * wind +
+          Math.cos(t * 0.3 + petal.wobble) * 0.5) *
+        delta;
+      petal.z += Math.sin(t * 0.4 + petal.drift * 1.3) * wind * 0.5 * delta;
+      petal.rot += delta * (0.8 + treble * 1.5);
 
-      if (petal.y < -2) {
-        petal.y = 16 + Math.random() * 6;
-        petal.x = (Math.random() - 0.5) * 30;
-        petal.z = (Math.random() - 0.5) * 30;
+      if (petal.y < -3) {
+        petal.y = 18 + Math.random() * 8;
+        petal.x = (Math.random() - 0.5) * 35;
+        petal.z = (Math.random() - 0.5) * 35;
       }
 
       dummy.position.set(petal.x, petal.y, petal.z);
-      dummy.rotation.set(petal.rot, petal.rot * 0.5, 0);
-      dummy.scale.setScalar(0.25 + treble * 0.15);
+      dummy.rotation.set(petal.rot, petal.rot * 0.6, Math.sin(t + i) * 0.3);
+      dummy.scale.setScalar(0.28 + treble * 0.2);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     });
@@ -60,55 +68,40 @@ function Petals({
 
   return (
     <instancedMesh ref={meshRef} args={[undefined, undefined, PETAL_COUNT]}>
-      <planeGeometry args={[0.6, 0.9]} />
+      <planeGeometry args={[0.55, 0.85]} />
       <meshStandardMaterial
         color="#f9a8d4"
-        emissive="#fda4af"
-        emissiveIntensity={0.4}
+        emissive="#fb7185"
+        emissiveIntensity={0.6}
         transparent
-        opacity={0.75}
+        opacity={0.82}
         side={THREE.DoubleSide}
-        roughness={0.6}
-        metalness={0.1}
+        roughness={0.4}
+        metalness={0.15}
       />
     </instancedMesh>
   );
 }
 
-function SoftParticles({
-  featuresRef,
-}: {
-  featuresRef: React.RefObject<AudioFeatures>;
-}) {
-  const ref = useRef<THREE.Points>(null);
-  const positions = useMemo(() => {
-    const arr = new Float32Array(1200 * 3);
-    for (let i = 0; i < arr.length; i++) arr[i] = (Math.random() - 0.5) * 35;
-    return arr;
-  }, []);
+function SunGlow({ featuresRef }: { featuresRef: React.RefObject<AudioFeatures> }) {
+  const ref = useRef<THREE.Mesh>(null);
 
   useFrame((state) => {
-    const points = ref.current;
-    if (!points) return;
-    const mat = points.material as THREE.PointsMaterial;
-    mat.opacity = 0.25 + featuresRef.current.treble * 0.35;
-    points.rotation.y = state.clock.elapsedTime * 0.02;
+    const mesh = ref.current;
+    if (!mesh) return;
+    const { rms, mid } = featuresRef.current;
+    const t = state.clock.elapsedTime;
+    mesh.position.y = 8 + Math.sin(t * 0.2) * 0.5;
+    mesh.scale.setScalar(3 + rms * 2 + Math.sin(t * 0.8) * 0.3);
+    const mat = mesh.material as THREE.MeshBasicMaterial;
+    mat.opacity = 0.08 + mid * 0.12;
   });
 
   return (
-    <points ref={ref}>
-      <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
-      </bufferGeometry>
-      <pointsMaterial
-        color="#fce7f3"
-        size={0.15}
-        transparent
-        opacity={0.3}
-        blending={THREE.AdditiveBlending}
-        depthWrite={false}
-      />
-    </points>
+    <mesh ref={ref} position={[12, 8, -15]}>
+      <sphereGeometry args={[1, 32, 32]} />
+      <meshBasicMaterial color="#fde68a" transparent opacity={0.1} blending={THREE.AdditiveBlending} depthWrite={false} />
+    </mesh>
   );
 }
 
@@ -117,21 +110,25 @@ export function PetalDriftScene({
   intensity,
   onCanvasReady,
 }: VisualizerProps) {
+  const theme = SKY_THEMES.joyful;
+
   return (
     <Canvas
       className="size-full"
-      camera={{ position: [0, 4, 12], fov: 50 }}
+      camera={{ position: [0, 3, 14], fov: 52 }}
       gl={{ antialias: true }}
       onCreated={({ gl, scene }) => {
-        scene.fog = new THREE.FogExp2("#1a0a14", 0.035);
+        scene.fog = new THREE.FogExp2(theme.fog, 0.028);
         onCanvasReady?.(gl.domElement);
       }}
     >
-      <color attach="background" args={["#120810"]} />
-      <ambientLight intensity={0.25} color="#ffd6e8" />
-      <directionalLight position={[5, 10, 5]} intensity={0.8} color="#fff1f2" />
-      <pointLight position={[-6, 3, 2]} intensity={1.5} color="#f472b6" distance={20} />
-      <SoftParticles featuresRef={featuresRef} />
+      <AuroraSky featuresRef={featuresRef} theme={theme} />
+      <ambientLight intensity={0.35} color="#ffd6e8" />
+      <directionalLight position={[8, 12, 6]} intensity={1.2} color="#fff7ed" />
+      <pointLight position={[-8, 4, 4]} intensity={2} color="#f472b6" distance={28} />
+      <SunGlow featuresRef={featuresRef} />
+      <SceneSparkles featuresRef={featuresRef} color={theme.sparkle} count={600} />
+      <FlowRibbons featuresRef={featuresRef} intensity={intensity} baseHue={340} />
       <Petals featuresRef={featuresRef} intensity={intensity} />
       <DreamyPostProcessing intensity={intensity} />
     </Canvas>

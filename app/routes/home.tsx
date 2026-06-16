@@ -18,8 +18,8 @@ export function meta({}: Route.MetaArgs) {
 
 const features = [
   {
-    title: "朦胧梦幻视觉",
-    description: "落雨、落花、极光光晕——柔光与雾气随音乐呼吸律动。",
+    title: "情绪可视化",
+    description: "悲伤、愉悦、愤怒、慢歌、快歌——2D 与 3D 共 10 种艺术效果，随音乐自动推荐。",
   },
   {
     title: "实时歌词识别",

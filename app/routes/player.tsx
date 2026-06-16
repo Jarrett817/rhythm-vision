@@ -1,13 +1,23 @@
 import { Link } from "react-router";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Route } from "./+types/player";
 import { useAudioEngine } from "~/features/audio/use-audio-engine";
 import { useLiveTranscription } from "~/features/lyrics/use-live-transcription";
 import { useRecorder } from "~/features/export/use-recorder";
 import {
   VISUALIZERS,
+  getDefaultForMood,
+  getVisualizersByCategory,
+  type VisualizerCategory,
   type VisualizerId,
 } from "~/features/visualizers/catalog";
+import {
+  detectMood,
+  getVisualizersForMood,
+  MOOD_DESCRIPTIONS,
+  MOOD_LABELS,
+  type SongMood,
+} from "~/lib/audio/mood";
 import { LyricsOverlay } from "~/components/lyrics-overlay";
 import { Button } from "~/components/ui/button";
 import { Slider } from "~/components/ui/slider";
@@ -18,13 +28,33 @@ export function meta({}: Route.MetaArgs) {
   return [{ title: "播放器 - Rhythm Vision" }];
 }
 
+type MoodFilter = SongMood | "all";
+type CategoryFilter = VisualizerCategory | "all";
+
+const MOOD_TABS: { value: MoodFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "sad", label: MOOD_LABELS.sad },
+  { value: "joyful", label: MOOD_LABELS.joyful },
+  { value: "angry", label: MOOD_LABELS.angry },
+  { value: "slow", label: MOOD_LABELS.slow },
+  { value: "fast", label: MOOD_LABELS.fast },
+];
+
+const CATEGORY_TABS: { value: CategoryFilter; label: string }[] = [
+  { value: "all", label: "全部类型" },
+  { value: "abstract", label: "抽象" },
+  { value: "landscape", label: "景观" },
+];
+
 export default function Player() {
   const {
     engineRef,
     featuresRef,
+    features,
     playing,
     loaded,
     fileName,
+    detectedMood,
     loadFile,
     togglePlay,
   } = useAudioEngine();
@@ -42,13 +72,33 @@ export default function Player() {
 
   const { recording, start: startRecord, stopAndDownload } = useRecorder();
 
+  const [moodFilter, setMoodFilter] = useState<MoodFilter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const [visualizerId, setVisualizerId] = useState<VisualizerId>("dream-rain");
   const [intensity, setIntensity] = useState(1.2);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const visualizer = VISUALIZERS.find((v) => v.id === visualizerId)!;
+  const filtered = getVisualizersForMood(
+    getVisualizersByCategory(categoryFilter),
+    moodFilter,
+  );
+  const visualizer =
+    filtered.find((v) => v.id === visualizerId) ?? filtered[0]!;
   const { Component } = visualizer;
+
+  const liveMood = playing ? detectedMood : detectMood(features);
+
+  useEffect(() => {
+    if (!filtered.some((v) => v.id === visualizerId)) {
+      setVisualizerId(filtered[0]?.id ?? "dream-rain");
+    }
+  }, [moodFilter, categoryFilter, filtered, visualizerId]);
+
+  const applySuggestedMood = () => {
+    setMoodFilter(liveMood);
+    setVisualizerId(getDefaultForMood(liveMood));
+  };
 
   const onFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -79,13 +129,25 @@ export default function Player() {
         >
           ← Rhythm Vision
         </Link>
-        <span className="truncate text-sm text-muted-foreground">
-          {fileName ?? "未选择音频"}
-        </span>
+        <div className="flex items-center gap-3">
+          {loaded && (
+            <button
+              type="button"
+              onClick={applySuggestedMood}
+              className="rounded-full border border-primary/30 bg-primary/10 px-3 py-0.5 text-xs text-primary hover:bg-primary/20"
+            >
+              推荐：{MOOD_LABELS[liveMood]}
+            </button>
+          )}
+          <span className="truncate text-sm text-muted-foreground">
+            {fileName ?? "未选择音频"}
+          </span>
+        </div>
       </header>
 
       <div className="relative min-h-0 flex-1">
         <Component
+          key={visualizer.id}
           featuresRef={featuresRef}
           intensity={intensity}
           onCanvasReady={(canvas) => {
@@ -111,7 +173,7 @@ export default function Player() {
       </div>
 
       <Card className="m-4 mt-0 rounded-xl">
-        <CardContent className="flex flex-col gap-4 pt-4">
+        <CardContent className="flex flex-col gap-3 pt-4">
           <div className="flex flex-wrap items-center gap-2">
             <input
               ref={fileInputRef}
@@ -150,13 +212,42 @@ export default function Player() {
           )}
 
           <Tabs
-            value={visualizerId}
+            value={categoryFilter}
+            onValueChange={(v) => setCategoryFilter(v as CategoryFilter)}
+          >
+            <TabsList className="h-auto flex-wrap">
+              {CATEGORY_TABS.map((tab) => (
+                <TabsTrigger key={tab.value} value={tab.value}>
+                  {tab.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+
+          <Tabs
+            value={moodFilter}
+            onValueChange={(v) => setMoodFilter(v as MoodFilter)}
+          >
+            <TabsList className="h-auto flex-wrap">
+              {MOOD_TABS.map((tab) => (
+                <TabsTrigger key={tab.value} value={tab.value}>
+                  {tab.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+
+          <Tabs
+            value={visualizer.id}
             onValueChange={(v) => setVisualizerId(v as VisualizerId)}
           >
-            <TabsList>
-              {VISUALIZERS.map((v) => (
+            <TabsList className="h-auto flex-wrap">
+              {filtered.map((v) => (
                 <TabsTrigger key={v.id} value={v.id}>
-                  {v.name}
+                  <span>{v.name}</span>
+                  <span className="ml-1.5 rounded px-1 text-[10px] opacity-60">
+                    {v.dimension.toUpperCase()}
+                  </span>
                 </TabsTrigger>
               ))}
             </TabsList>
@@ -164,6 +255,7 @@ export default function Player() {
 
           <p className="text-xs text-muted-foreground">
             {visualizer.description}
+            {moodFilter !== "all" && ` · ${MOOD_DESCRIPTIONS[moodFilter]}`}
           </p>
 
           <div className="flex items-center gap-3">

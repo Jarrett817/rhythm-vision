@@ -21,10 +21,14 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   try {
     if (data.type === "init") {
       self.postMessage({ type: "progress", status: "loading-model" } satisfies WorkerReply);
+      // v4.2 的 q8 量化 Whisper 与 ONNX Runtime 存在兼容问题，fp32 稳定可用
       transcriber = await pipeline(
         "automatic-speech-recognition",
         "Xenova/whisper-tiny",
-        { dtype: "q8" },
+        {
+          dtype: "fp32",
+          device: "wasm",
+        },
       );
       self.postMessage({ type: "ready" } satisfies WorkerReply);
       return;
