@@ -261,8 +261,9 @@ export function SweetPartyScene(props: VisualizerProps) {
       setup={(app, featuresRef, intensityRef) => {
         const bg = new Graphics();
         const rays = new Graphics();
+        const glowShapes = new Graphics();
         const shapes = new Graphics();
-        app.stage.addChild(bg, rays, shapes);
+        app.stage.addChild(bg, rays, glowShapes, shapes);
 
         const glowFilter = new GlowFilter({
           distance: 24,
@@ -280,7 +281,8 @@ export function SweetPartyScene(props: VisualizerProps) {
         });
         const rgbFilter = new RGBSplitFilter([-1.2, 0], [0, 0.8], [1.2, 0]);
         rays.filters = [godrayFilter as unknown as Filter];
-        shapes.filters = [glowFilter as unknown as Filter, rgbFilter as unknown as Filter];
+        glowShapes.filters = [glowFilter as unknown as Filter];
+        shapes.filters = [rgbFilter as unknown as Filter];
 
         const audio = createAudioResponse(featuresRef);
         const engine = Matter.Engine.create({
@@ -405,6 +407,7 @@ export function SweetPartyScene(props: VisualizerProps) {
 
           bg.clear();
           rays.clear();
+          glowShapes.clear();
           shapes.clear();
 
           godrayFilter.time = t * 0.22;
@@ -445,7 +448,21 @@ export function SweetPartyScene(props: VisualizerProps) {
             const alpha = 0.76 + Math.max(0, depth) * 0.2;
             const lineW = Math.max(1.1, p.size * 0.09);
 
+            const glowColor = hslNumber(p.hue, 92, 62);
+            const glowAlpha = 0.34 + rms * 0.16;
+            const glowW = lineW * 3.4;
+
             if (p.kind === "heart") {
+              strokeHeartOutline(
+                glowShapes,
+                x,
+                y,
+                p.size,
+                glowColor,
+                glowAlpha,
+                glowW,
+                p.body.angle,
+              );
               strokeHeartOutline(
                 shapes,
                 x,
@@ -457,6 +474,16 @@ export function SweetPartyScene(props: VisualizerProps) {
                 p.body.angle,
               );
             } else {
+              strokeStarOutline(
+                glowShapes,
+                x,
+                y,
+                p.size,
+                glowColor,
+                glowAlpha,
+                glowW,
+                p.body.angle,
+              );
               strokeStarOutline(
                 shapes,
                 x,
