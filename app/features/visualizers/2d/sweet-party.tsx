@@ -1,4 +1,7 @@
 import { Graphics } from "pixi.js";
+import { GlowFilter } from "@pixi/filter-glow";
+import { GodrayFilter } from "@pixi/filter-godray";
+import { RGBSplitFilter } from "@pixi/filter-rgb-split";
 import Matter from "matter-js";
 import decomp from "poly-decomp";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
@@ -7,8 +10,7 @@ import { createAudioResponse } from "~/lib/audio/response";
 
 Matter.Common.setDecomp(decomp);
 
-const STRIPE_COUNT = 20;
-const MAX_PARTICLES = 220;
+const STRIPE_COUNT = 9;
 const CANDY_HUES = [330, 18, 42, 195, 265, 155, 85, 310, 55, 175];
 
 type ParticleKind = "heart" | "star";
@@ -27,6 +29,31 @@ function hslColor(h: number, s: number, l: number) {
   const sat = Math.round(Math.max(0, Math.min(100, s)));
   const light = Math.round(Math.max(0, Math.min(100, l)));
   return `hsl(${hue}, ${sat}%, ${light}%)`;
+}
+
+function hslNumber(h: number, s: number, l: number) {
+  const hue = (((h % 360) + 360) % 360) / 60;
+  const sat = Math.max(0, Math.min(1, s / 100));
+  const light = Math.max(0, Math.min(1, l / 100));
+  const c = (1 - Math.abs(2 * light - 1)) * sat;
+  const x = c * (1 - Math.abs((hue % 2) - 1));
+  const m = light - c / 2;
+  const [r1, g1, b1] =
+    hue < 1
+      ? [c, x, 0]
+      : hue < 2
+        ? [x, c, 0]
+        : hue < 3
+          ? [0, c, x]
+          : hue < 4
+            ? [0, x, c]
+            : hue < 5
+              ? [x, 0, c]
+              : [c, 0, x];
+  const r = Math.round((r1 + m) * 255);
+  const g = Math.round((g1 + m) * 255);
+  const b = Math.round((b1 + m) * 255);
+  return (r << 16) + (g << 8) + b;
 }
 
 function starOutlineVerts(outerR: number) {
@@ -133,7 +160,7 @@ function spawnParticle(
   kind: ParticleKind,
   zone = pickSpawnZone(),
 ): Particle {
-  const size = 10 + Math.random() * 16;
+  const size = 34 + Math.random() * 34;
   const x = size + Math.random() * Math.max(size, width - size * 2);
   const y =
     zone === "top"
@@ -183,28 +210,28 @@ function drawDynamicStripes(
   intensity: number,
 ) {
   const stripeW = width / STRIPE_COUNT;
-  const drift = (t * (42 + mid * 90 * intensity) + bass * 30) % stripeW;
-  const pulse = beat ? 1.35 : 1 + bass * 0.5 + rms * 0.35;
+  const drift = (t * (10 + mid * 18 * intensity) + bass * 8) % stripeW;
+  const pulse = beat ? 1.08 : 1 + bass * 0.18 + rms * 0.12;
 
   for (let i = -1; i <= STRIPE_COUNT; i++) {
     const idx = ((i % STRIPE_COUNT) + STRIPE_COUNT) % STRIPE_COUNT;
     const stripe = stripes[idx]!;
     const wave =
-      Math.sin(t * stripe.speed + stripe.phase) * 10 * (1 + mid * intensity) +
-      Math.sin(t * 2.4 + i * 0.9) * 6 * pulse;
+      Math.sin(t * stripe.speed * 0.35 + stripe.phase) * 4 * (1 + mid * 0.35 * intensity) +
+      Math.sin(t * 0.7 + i * 0.9) * 3 * pulse;
     const x = i * stripeW - drift + wave;
     const hue =
       (stripe.hue +
-        t * 48 +
-        mid * 100 * intensity +
+        t * 10 +
+        mid * 24 * intensity +
         i * 14 +
-        Math.sin(t * 1.8 + stripe.phase) * 28 * pulse) %
+        Math.sin(t * 0.45 + stripe.phase) * 8 * pulse) %
       360;
-    const sat = 30 + Math.sin(t * 2.2 + i * 0.6) * 14 + rms * 22 * intensity;
+    const sat = 36 + Math.sin(t * 0.55 + i * 0.6) * 6 + rms * 10 * intensity;
     const light =
-      72 +
-      Math.sin(t * 1.6 + stripe.phase) * 12 +
-      bass * 14 * intensity +
+      74 +
+      Math.sin(t * 0.4 + stripe.phase) * 5 +
+      bass * 5 * intensity +
       (i % 2) * 4;
 
     g.rect(x - 2, 0, stripeW + 6, height);
@@ -233,8 +260,27 @@ export function SweetPartyScene(props: VisualizerProps) {
       bg="#f5eef8"
       setup={(app, featuresRef, intensityRef) => {
         const bg = new Graphics();
+        const rays = new Graphics();
         const shapes = new Graphics();
-        app.stage.addChild(bg, shapes);
+        app.stage.addChild(bg, rays, shapes);
+
+        const glowFilter = new GlowFilter({
+          distance: 24,
+          outerStrength: 1.6,
+          innerStrength: 0.15,
+          color: 0xff66cc,
+          quality: 0.22,
+          alpha: 0.8,
+        });
+        const godrayFilter = new GodrayFilter({
+          angle: 28,
+          gain: 0.22,
+          lacunarity: 2.1,
+          alpha: 0.28,
+        });
+        const rgbFilter = new RGBSplitFilter([-1.2, 0], [0, 0.8], [1.2, 0]);
+        rays.filters = [godrayFilter];
+        shapes.filters = [glowFilter, rgbFilter];
 
         const audio = createAudioResponse(featuresRef);
         const engine = Matter.Engine.create({
@@ -259,25 +305,26 @@ export function SweetPartyScene(props: VisualizerProps) {
           const floorY = height;
           bounds = { width, height, floorY };
           walls = [
-            Matter.Bodies.rectangle(width * 0.5, floorY + 22, width + 200, 44, {
+            Matter.Bodies.rectangle(width * 0.5, floorY + 22, width * 1.12, 44, {
               isStatic: true,
-              friction: 0.62,
-              restitution: 0.12,
+              friction: 0.28,
+              restitution: 0.22,
               label: "floor",
-            }),
-            Matter.Bodies.rectangle(-40, height * 0.5, 80, height * 1.6, {
-              isStatic: true,
-              label: "wall",
-            }),
-            Matter.Bodies.rectangle(width + 40, height * 0.5, 80, height * 1.6, {
-              isStatic: true,
-              label: "wall",
             }),
           ];
           Matter.Composite.add(world, walls);
         };
 
         rebuildWalls(app.renderer.width, app.renderer.height);
+        for (let i = 0; i < 46; i++) {
+          addParticle(
+            particles,
+            world,
+            app.renderer.width,
+            app.renderer.height,
+            i % 3 === 0 ? "mid" : "top",
+          );
+        }
 
         const tick = () => {
           t += 0.016;
@@ -295,32 +342,25 @@ export function SweetPartyScene(props: VisualizerProps) {
           }
           shake *= 0.85;
 
-          const room = MAX_PARTICLES - particles.length;
-          if (room > 0) {
-            const baseRate =
-              0.22 + treble * 0.28 * intensity + rms * 0.18 + bass * 0.08;
-            const perFrame = Math.min(room, 1 + Math.floor(baseRate * 2.5));
+          const baseRate = 0.22 + treble * 0.1 * intensity + rms * 0.07 + bass * 0.04;
+          const perFrame = 1;
 
-            for (let n = 0; n < perFrame; n++) {
-              if (Math.random() < baseRate) {
-                addParticle(particles, world, width, height);
-              }
+          for (let n = 0; n < perFrame; n++) {
+            if (Math.random() < baseRate) {
+              addParticle(particles, world, width, height);
             }
+          }
 
-            if (Boolean(beat) || audio.impact > 0.32) {
-              const burst = Math.min(
-                room,
-                3 + Math.floor((audio.impact + rms) * 10 * intensity),
+          if (Boolean(beat) || audio.impact > 0.32) {
+            const burst = 2 + Math.floor((audio.impact + rms) * 3 * intensity);
+            for (let b = 0; b < burst; b++) {
+              addParticle(
+                particles,
+                world,
+                width,
+                height,
+                Math.random() < 0.55 ? "mid" : "top",
               );
-              for (let b = 0; b < burst; b++) {
-                addParticle(
-                  particles,
-                  world,
-                  width,
-                  height,
-                  Math.random() < 0.55 ? "mid" : "top",
-                );
-              }
             }
           }
 
@@ -332,10 +372,11 @@ export function SweetPartyScene(props: VisualizerProps) {
                 1,
                 (p.body.position.y - (floorY - 140)) / 140,
               );
-              const force = shake * (0.35 + depth) * 0.00004 * intensity;
+              const side = p.body.position.x < width * 0.5 ? -1 : 1;
+              const force = shake * (0.35 + depth) * 0.00014 * intensity;
               Matter.Body.applyForce(p.body, p.body.position, {
-                x: force * (Math.random() > 0.5 ? 1 : -1) * (1 + bass * 2.2),
-                y: -force * 0.4,
+                x: force * side * (1 + bass * 2.2),
+                y: -force * 0.32,
               });
             }
           }
@@ -344,9 +385,8 @@ export function SweetPartyScene(props: VisualizerProps) {
             if (p.body.isSleeping) continue;
             Matter.Body.applyForce(p.body, p.body.position, {
               x:
-                Math.sin(t * 1.8 + p.body.position.x * 0.015) *
-                mid *
-                0.000014 *
+                (Math.sin(t * 1.2 + p.body.position.x * 0.01) * mid * 0.000018 +
+                  (p.body.position.x < width * 0.5 ? -1 : 1) * 0.000018) *
                 intensity,
               y: 0,
             });
@@ -357,21 +397,27 @@ export function SweetPartyScene(props: VisualizerProps) {
           for (let i = particles.length - 1; i >= 0; i--) {
             const p = particles[i]!;
             const { x, y } = p.body.position;
-            if (y > height + 100 || x < -100 || x > width + 100) {
+            if (y > height + 120 || x < -80 || x > width + 80) {
               Matter.Composite.remove(world, p.body);
               particles.splice(i, 1);
             }
           }
 
-          while (particles.length > MAX_PARTICLES) {
-            const idx = particles.findIndex((p) => p.body.isSleeping);
-            const removeAt = idx >= 0 ? idx : 0;
-            const [removed] = particles.splice(removeAt, 1);
-            if (removed) Matter.Composite.remove(world, removed.body);
-          }
-
           bg.clear();
+          rays.clear();
           shapes.clear();
+
+          godrayFilter.time = t * 0.22;
+          godrayFilter.gain = 0.16 + rms * 0.14;
+          glowFilter.outerStrength = 1.15 + treble * 1.4 + rms * 0.7;
+          glowFilter.color = hslNumber(315 + mid * 35, 90, 64);
+          const split = 0.45 + treble * 1.8 + audio.impact * 1.2;
+          rgbFilter.red = [-split, 0];
+          rgbFilter.green = [0, split * 0.45];
+          rgbFilter.blue = [split, 0];
+
+          rays.rect(0, 0, width, height);
+          rays.fill({ color: 0xffffff, alpha: 0.18 + rms * 0.08 });
 
           drawDynamicStripes(
             bg,

@@ -14,7 +14,8 @@ import {
   Vignette,
 } from "@react-three/postprocessing";
 
-const RAIN_COUNT = 5000;
+const RAIN_COUNT = 6500;
+const FOREGROUND_RAIN_COUNT = 1200;
 const MOON_DIR = new THREE.Vector3(0.42, 0.78, -0.38);
 
 function Moon() {
@@ -37,6 +38,128 @@ function Moon() {
   );
 }
 
+function StageRainBeams({
+  featuresRef,
+  intensity,
+}: {
+  featuresRef: React.RefObject<import("~/lib/audio/types").AudioFeatures>;
+  intensity: number;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const audio = useAudioResponse(featuresRef);
+
+  useFrame((state, delta) => {
+    const group = groupRef.current;
+    if (!group) return;
+    audio.update(delta);
+    const t = state.clock.elapsedTime;
+    group.children.forEach((child, i) => {
+      const mesh = child as THREE.Mesh;
+      mesh.rotation.z = Math.sin(t * 0.18 + i) * 0.08;
+      mesh.position.x = (i - 2) * 8 + Math.sin(t * 0.12 + i) * 1.2;
+      const mat = mesh.material as THREE.MeshBasicMaterial;
+      mat.opacity = 0.045 + audio.rms * 0.05 * intensity + audio.treble * 0.025;
+    });
+  });
+
+  return (
+    <group ref={groupRef} position={[0, 5, -11]}>
+      {Array.from({ length: 5 }, (_, i) => (
+        <mesh key={i} rotation={[0.12, 0, (i - 2) * 0.08]}>
+          <planeGeometry args={[4.5, 24]} />
+          <meshBasicMaterial
+            color="#9fb7ff"
+            transparent
+            opacity={0.055}
+            blending={THREE.AdditiveBlending}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function ForegroundRain({
+  featuresRef,
+  intensity,
+}: {
+  featuresRef: React.RefObject<import("~/lib/audio/types").AudioFeatures>;
+  intensity: number;
+}) {
+  const linesRef = useRef<LineSegments>(null);
+  const audio = useAudioResponse(featuresRef);
+  const speeds = useMemo(
+    () => Float32Array.from({ length: FOREGROUND_RAIN_COUNT }, () => 24 + Math.random() * 28),
+    [],
+  );
+  const positions = useMemo(() => {
+    const arr = new Float32Array(FOREGROUND_RAIN_COUNT * 6);
+    for (let i = 0; i < FOREGROUND_RAIN_COUNT; i++) {
+      const x = (Math.random() - 0.5) * 52;
+      const y = Math.random() * 28;
+      const z = 4 + Math.random() * 10;
+      const len = 1.3 + Math.random() * 2.4;
+      arr[i * 6] = x;
+      arr[i * 6 + 1] = y;
+      arr[i * 6 + 2] = z;
+      arr[i * 6 + 3] = x + 0.12;
+      arr[i * 6 + 4] = y - len;
+      arr[i * 6 + 5] = z + 0.05;
+    }
+    return arr;
+  }, []);
+
+  useFrame((_, delta) => {
+    const lines = linesRef.current;
+    if (!lines) return;
+    audio.update(delta);
+    const arr = lines.geometry.attributes.position.array as Float32Array;
+    const speedMul = 1 + audio.bass * 0.9 * intensity;
+
+    for (let i = 0; i < FOREGROUND_RAIN_COUNT; i++) {
+      const spd = speeds[i]! * speedMul * delta;
+      for (let v = 0; v < 2; v++) {
+        const idx = i * 6 + v * 3;
+        arr[idx]! += (0.16 + audio.mid * 0.5) * delta;
+        arr[idx + 1]! -= spd;
+      }
+      if (arr[i * 6 + 1]! < -1) {
+        const x = (Math.random() - 0.5) * 52;
+        const y = 24 + Math.random() * 10;
+        const z = 4 + Math.random() * 10;
+        const len = 1.3 + Math.random() * 2.4;
+        arr[i * 6] = x;
+        arr[i * 6 + 1] = y;
+        arr[i * 6 + 2] = z;
+        arr[i * 6 + 3] = x + 0.12;
+        arr[i * 6 + 4] = y - len;
+        arr[i * 6 + 5] = z + 0.05;
+      }
+    }
+
+    lines.geometry.attributes.position.needsUpdate = true;
+    const mat = lines.material as THREE.LineBasicMaterial;
+    mat.opacity = 0.12 + audio.treble * 0.18 * intensity;
+  });
+
+  return (
+    <lineSegments ref={linesRef}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
+      </bufferGeometry>
+      <lineBasicMaterial
+        color="#dbeafe"
+        transparent
+        opacity={0.14}
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+      />
+    </lineSegments>
+  );
+}
+
 function MistVeil() {
   const ref = useRef<THREE.Mesh>(null);
   useFrame((state) => {
@@ -47,8 +170,8 @@ function MistVeil() {
   });
   return (
     <mesh ref={ref} position={[0, 2, -15]} rotation={[-0.1, 0, 0]}>
-      <planeGeometry args={[90, 12]} />
-      <meshBasicMaterial color="#8aa8d8" transparent opacity={0.08} depthWrite={false} />
+      <planeGeometry args={[120, 18]} />
+      <meshBasicMaterial color="#8aa8d8" transparent opacity={0.08} depthWrite={false} blending={THREE.AdditiveBlending} />
     </mesh>
   );
 }
@@ -223,7 +346,9 @@ export function DreamRainScene({
             <color attach="background" args={["#040810"]} />
             <ambientLight intensity={0.12} color="#4a6088" />
             <hemisphereLight args={["#1a2848", "#020408", 0.35]} />
+            <directionalLight position={[-8, 9, 6]} intensity={0.9} color="#6ea8ff" />
             <Moon />
+            <StageRainBeams featuresRef={featuresRef} intensity={intensity} />
             <MistVeil />
             <MoonlitWaterSurface
               featuresRef={featuresRef}
@@ -231,6 +356,7 @@ export function DreamRainScene({
               moonDir={MOON_DIR}
             />
             <RealisticRain featuresRef={featuresRef} intensity={intensity} />
+            <ForegroundRain featuresRef={featuresRef} intensity={intensity} />
             <RainRipples featuresRef={featuresRef} intensity={intensity} />
             <EffectComposer multisampling={4}>
               <Bloom

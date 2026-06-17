@@ -41,10 +41,10 @@ void main() {
   float depth = 1.0 - vUv.y;
   vec3 deep = vec3(0.02, 0.14, 0.34);
   vec3 shallow = vec3(0.07, 0.46, 0.66);
-  vec3 foam = vec3(0.75, 0.92, 1.0);
-  vec3 col = mix(deep, shallow, depth * 0.82 + vWave * 0.32);
-  col = mix(col, foam, smoothstep(0.22, 0.58, vWave + uTreble * 0.35) * 0.38);
-  col += vec3(0.02, 0.05, 0.07) * uMid;
+  vec3 foam = vec3(0.62, 0.86, 0.96);
+  vec3 col = mix(deep, shallow, depth * 0.74 + vWave * 0.18);
+  col = mix(col, foam, smoothstep(0.32, 0.72, vWave + uTreble * 0.18) * 0.18);
+  col += vec3(0.015, 0.035, 0.045) * uMid;
   csm_DiffuseColor = vec4(col, 0.94);
 }
 `;
@@ -90,8 +90,12 @@ export function OceanWaterSurface({
         uniforms={uniforms}
         transparent
         side={THREE.DoubleSide}
-        roughness={0.08}
-        metalness={0.35}
+        roughness={0.22}
+        metalness={0}
+        clearcoat={0.65}
+        clearcoatRoughness={0.2}
+        ior={1.333}
+        transmission={0.08}
         color="#0c4a6e"
       />
     </mesh>

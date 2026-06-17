@@ -14,18 +14,21 @@ export function useLiveTranscription(engineRef: React.RefObject<AudioEngine | nu
 
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [enabled, setEnabled] = useState(true);
+  const [enabled, setEnabled] = useState(false);
   const [lines, setLines] = useState<string[]>([]);
   const [currentLine, setCurrentLine] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!enabled || workerRef.current) return;
+
     const worker = new Worker(
       new URL("~/workers/whisper.worker.ts", import.meta.url),
       { type: "module" },
     );
     workerRef.current = worker;
     setLoading(true);
+    setError(null);
 
     worker.onmessage = (event: MessageEvent<WorkerReply>) => {
       const data = event.data;
@@ -58,8 +61,11 @@ export function useLiveTranscription(engineRef: React.RefObject<AudioEngine | nu
     return () => {
       worker.terminate();
       workerRef.current = null;
+      pendingRef.current = false;
+      setReady(false);
+      setLoading(false);
     };
-  }, []);
+  }, [enabled]);
 
   const reset = useCallback(() => {
     chunkIdRef.current = 0;

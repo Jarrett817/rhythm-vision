@@ -1,9 +1,8 @@
 import { Canvas } from "@react-three/fiber";
-import { Suspense, useRef } from "react";
+import { Suspense, useMemo, useRef } from "react";
 import * as THREE from "three";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
 import { AuroraSky } from "~/features/visualizers/shared/aurora-sky";
-import { SceneSparkles } from "~/features/visualizers/shared/flow-ribbons";
 import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postprocessing";
 import { OceanWaterSurface } from "~/features/visualizers/shared/ocean-water-surface";
 import { SceneSpringEntry } from "~/features/visualizers/shared/scene-spring-entry";
@@ -13,45 +12,59 @@ import { SKY_THEMES } from "~/features/visualizers/shared/themes";
 import { useFrame } from "@react-three/fiber";
 
 function SeaMist({ featuresRef }: { featuresRef: VisualizerProps["featuresRef"] }) {
-  const ref = useRef<THREE.Points>(null);
-  const positions = useRef(
-    (() => {
-      const arr = new Float32Array(800 * 3);
-      for (let i = 0; i < 800; i++) {
-        arr[i * 3] = (Math.random() - 0.5) * 40;
-        arr[i * 3 + 1] = Math.random() * 4;
-        arr[i * 3 + 2] = (Math.random() - 0.5) * 40;
-      }
-      return arr;
-    })(),
-  ).current;
+  const groupRef = useRef<THREE.Group>(null);
+  const puffs = useMemo(
+    () =>
+      Array.from({ length: 18 }, (_, i) => ({
+        x: -22 + i * 2.6 + (Math.random() - 0.5) * 1.4,
+        y: -0.65 + Math.random() * 0.75,
+        z: -10 - Math.random() * 18,
+        width: 5 + Math.random() * 8,
+        height: 0.28 + Math.random() * 0.42,
+        phase: Math.random() * Math.PI * 2,
+        speed: 0.08 + Math.random() * 0.16,
+      })),
+    [],
+  );
 
   useFrame((state, delta) => {
-    const points = ref.current;
-    if (!points) return;
-    const arr = points.geometry.attributes.position!.array as Float32Array;
-    for (let i = 0; i < 800; i++) {
-      arr[i * 3]! += delta * (0.2 + featuresRef.current.mid);
-      if (arr[i * 3]! > 20) arr[i * 3] = -20;
-    }
-    points.geometry.attributes.position!.needsUpdate = true;
-    points.position.y = -0.5 + Math.sin(state.clock.elapsedTime * 0.3) * 0.2;
+    const group = groupRef.current;
+    if (!group) return;
+    const t = state.clock.elapsedTime;
+    const { mid, rms } = featuresRef.current;
+
+    group.children.forEach((child, i) => {
+      const mesh = child as THREE.Mesh;
+      const puff = puffs[i]!;
+      mesh.position.x += delta * (puff.speed + mid * 0.3);
+      if (mesh.position.x > 24) mesh.position.x = -24;
+      mesh.position.y = puff.y + Math.sin(t * 0.25 + puff.phase) * 0.08;
+      mesh.scale.set(
+        puff.width * (1 + rms * 0.12),
+        puff.height * (1 + rms * 0.18),
+        1,
+      );
+      const mat = mesh.material as THREE.MeshBasicMaterial;
+      mat.opacity = 0.055 + rms * 0.04 + Math.sin(t * 0.18 + puff.phase) * 0.012;
+    });
   });
 
   return (
-    <points ref={ref}>
-      <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
-      </bufferGeometry>
-      <pointsMaterial
-        color="#bae6fd"
-        size={0.15}
-        transparent
-        opacity={0.35}
-        blending={THREE.AdditiveBlending}
-        depthWrite={false}
-      />
-    </points>
+    <group ref={groupRef}>
+      {puffs.map((puff, i) => (
+        <mesh key={i} position={[puff.x, puff.y, puff.z]} rotation={[-0.22, 0, 0]}>
+          <planeGeometry args={[1, 1]} />
+          <meshBasicMaterial
+            color="#b8d6df"
+            transparent
+            opacity={0.06}
+            blending={THREE.AdditiveBlending}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      ))}
+    </group>
   );
 }
 
@@ -101,13 +114,12 @@ export function OceanHorizonScene({
       >
         <SceneSpringEntry>
           <Suspense fallback={null}>
-            <SceneEnvironment variant="sunset" intensity={0.62} />
+            <SceneEnvironment variant="sunset" intensity={0.32} />
           </Suspense>
           <AuroraSky featuresRef={featuresRef} theme={theme} />
           <ambientLight intensity={0.25} color="#7dd3fc" />
           <directionalLight position={[10, 8, -5]} intensity={1.2} color="#fdba74" />
           <SunDisk featuresRef={featuresRef} />
-          <SceneSparkles featuresRef={featuresRef} color={theme.sparkle} count={300} />
           <OceanWaterSurface featuresRef={featuresRef} intensity={intensity} />
           <SeaMist featuresRef={featuresRef} />
           <DreamyPostProcessing intensity={intensity} />

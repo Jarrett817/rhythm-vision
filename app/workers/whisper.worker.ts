@@ -1,6 +1,8 @@
 import { pipeline, env } from "@huggingface/transformers";
 
-env.allowLocalModels = false;
+env.allowLocalModels = true;
+env.allowRemoteModels = true;
+env.localModelPath = `${import.meta.env.BASE_URL}models/`;
 
 type WorkerMessage =
   | { type: "init" }

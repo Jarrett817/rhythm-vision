@@ -114,12 +114,13 @@ export function InkMistScene(props: VisualizerProps) {
         let t = 0;
 
         const tick = () => {
-          t += 0.014;
           audio.update(0.016);
           const { width, height } = app.renderer;
           const intensity = intensityRef.current;
           const { bass, mid, treble, rms } = featuresRef.current;
-          const breath = 0.5 + rms * 1.2;
+          const energy = bass * 0.45 + mid * 0.25 + treble * 0.15 + rms * 0.15;
+          t += 0.003 + energy * 0.018;
+          const breath = 0.35 + rms * 1.2;
 
           paper.clear();
           sky.clear();
@@ -210,7 +211,7 @@ export function InkMistScene(props: VisualizerProps) {
               py,
               r,
               0.22 + rms * 0.2 + mid * 0.08,
-              c.seed + t * 0.1,
+              c.seed,
             );
           }
 
@@ -235,7 +236,7 @@ export function InkMistScene(props: VisualizerProps) {
 
           // 细雨 — 极细、低对比
           for (const d of rainDrops) {
-            d.y += d.speed * (0.45 + bass * 1.5) * intensity * 0.016;
+            d.y += d.speed * (0.04 + bass * 1.5) * intensity * 0.016;
             d.x += d.drift * (1 + mid);
             if (d.y > 1.02) {
               d.y = -0.01;
