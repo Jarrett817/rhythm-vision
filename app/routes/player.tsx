@@ -1,10 +1,13 @@
 import { useRef, useState, useEffect } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
-import * as THREE from "three";
 import type { Route } from "./+types/player";
 import { useAudioEngine } from "~/features/audio/use-audio-engine";
 import { useLiveTranscription } from "~/features/lyrics/use-live-transcription";
 import { useRecorder } from "~/features/export/use-recorder";
+import {
+  VISUALIZERS,
+  type VisualizerId,
+  getVisualizersByCategory,
+} from "~/features/visualizers/catalog";
 import { LyricsOverlay } from "~/components/lyrics-overlay";
 import { Button } from "~/components/ui/button";
 import { Slider } from "~/components/ui/slider";
@@ -15,6 +18,11 @@ import {
   DrawerTitle,
   DrawerTrigger,
 } from "~/components/ui/drawer";
+import {
+  Tabs,
+  TabsList,
+  TabsTrigger,
+} from "~/components/ui/tabs";
 
 // 设置图标 SVG
 const SettingsIcon = () => (
@@ -47,10 +55,13 @@ const FullscreenIcon = () => (
     strokeLinecap="round"
     strokeLinejoin="round"
   >
-    <path d="M8 3H5a2 2 0 0 0-2 2v3" />
-    <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
-    <path d="M3 16v3a2 2 0 0 0 2 2h3" />
-    <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+    <path d="M4 14v4h4" />
+    <path d="M20 10V6h-4" />
+    <path d="M14 10h6" />
+    <path d="M4 10h6" />
+    <path d="M14 20v-6" />
+    <path d="M4 4v6h6" />
+    <path d="M20 20h-6" />
   </svg>
 );
 
@@ -67,34 +78,12 @@ const ExitFullscreenIcon = () => (
     strokeLinecap="round"
     strokeLinejoin="round"
   >
-    <path d="M4 14v4h4" />
-    <path d="M20 10V6h-4" />
-    <path d="M14 10h6" />
-    <path d="M4 10h6" />
-    <path d="M14 20v-6" />
-    <path d="M4 4v6h6" />
-    <path d="M20 20h-6" />
+    <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+    <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+    <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+    <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
   </svg>
 );
-
-// 可视化组件
-function VisualizerScene() {
-  const meshRef = useRef<THREE.Mesh>(null);
-
-  useFrame((state) => {
-    if (meshRef.current) {
-      meshRef.current.rotation.x = state.clock.elapsedTime * 0.5;
-      meshRef.current.rotation.y = state.clock.elapsedTime * 0.3;
-    }
-  });
-
-  return (
-    <mesh ref={meshRef}>
-      <boxGeometry args={[2, 2, 2]} />
-      <meshStandardMaterial color="#6366f1" />
-    </mesh>
-  );
-}
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "Rhythm Vision" }];
@@ -124,6 +113,8 @@ export default function Player() {
 
   const { recording, start: startRecord, stopAndDownload } = useRecorder();
 
+  const [visualizerId, setVisualizerId] = useState<VisualizerId>("dream-rain");
+  const [visualizerCategory, setVisualizerCategory] = useState<"all" | "abstract" | "landscape">("all");
   const [intensity, setIntensity] = useState(1.2);
   const [showTopBar, setShowTopBar] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -131,6 +122,13 @@ export default function Player() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // 获取当前可视化器组件
+  const visualizer = VISUALIZERS.find((v) => v.id === visualizerId)!;
+  const VisualizerComponent = visualizer.Component;
+
+  // 按分类过滤可视化器
+  const filteredVisualizers = getVisualizersByCategory(visualizerCategory);
 
   // 全屏切换
   const toggleFullscreen = () => {
@@ -181,136 +179,187 @@ export default function Player() {
         onMouseLeave={() => setShowTopBar(false)}
       >
         <div
-          className={`flex items-center justify-end gap-3 px-6 py-4 transition-all duration-300 ${
+          className={`flex items-center justify-between px-6 py-4 transition-all duration-300 ${
             showTopBar
               ? "bg-gradient-to-b from-black/60 to-transparent opacity-100"
               : "opacity-0"
           }`}
         >
-          {/* 抽屉 - 设置按钮 */}
-          <Drawer open={drawerOpen} onOpenChange={setDrawerOpen}>
-            <DrawerTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="text-white hover:bg-white/20"
-              >
-                <SettingsIcon />
-              </Button>
-            </DrawerTrigger>
-            <DrawerContent className="bg-background/95 backdrop-blur">
-              <DrawerHeader>
-                <DrawerTitle>设置</DrawerTitle>
-              </DrawerHeader>
-              <div className="px-4 pb-8 space-y-6">
-                {/* 音频文件选择 */}
-                <div className="space-y-3">
-                  <h4 className="text-sm font-medium">音频</h4>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="audio/*"
-                    className="hidden"
-                    onChange={onFileChange}
-                  />
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="flex-1"
+          {/* 左侧显示当前可视化器名称和描述 */}
+          <div className="text-white">
+            <h3 className="font-medium">{visualizer.name}</h3>
+            <p className="text-xs text-white/70">{visualizer.description}</p>
+          </div>
+
+          {/* 右侧按钮 */}
+          <div className="flex items-center gap-2">
+            {/* 抽屉 - 设置按钮 */}
+            <Drawer open={drawerOpen} onOpenChange={setDrawerOpen}>
+              <DrawerTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-white hover:bg-white/20"
+                >
+                  <SettingsIcon />
+                </Button>
+              </DrawerTrigger>
+              <DrawerContent className="bg-background/95 backdrop-blur">
+                <DrawerHeader>
+                  <DrawerTitle>设置</DrawerTitle>
+                </DrawerHeader>
+                <div className="px-4 pb-8 space-y-6">
+                  {/* 可视化器分类 */}
+                  <div className="space-y-3">
+                    <h4 className="text-sm font-medium">效果分类</h4>
+                    <Tabs
+                      value={visualizerCategory}
+                      onValueChange={(v) => {
+                        setVisualizerCategory(v as "all" | "abstract" | "landscape");
+                        // 如果当前选择不在新分类中，自动切换到第一个
+                        const currentInCategory = filteredVisualizers.find(
+                          (viz) => viz.id === visualizerId,
+                        );
+                        if (!currentInCategory) {
+                          setVisualizerId(filteredVisualizers[0]?.id ?? "dream-rain");
+                        }
+                      }}
                     >
-                      选择音频文件
-                    </Button>
-                    <Button onClick={togglePlay} disabled={!loaded}>
-                      {playing ? "暂停" : "播放"}
+                      <TabsList className="w-full">
+                        <TabsTrigger value="all" className="flex-1">全部</TabsTrigger>
+                        <TabsTrigger value="abstract" className="flex-1">抽象</TabsTrigger>
+                        <TabsTrigger value="landscape" className="flex-1">景观</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                  </div>
+
+                  {/* 可视化器选择 */}
+                  <div className="space-y-3">
+                    <h4 className="text-sm font-medium">可视化效果 ({filteredVisualizers.length}个)</h4>
+                    <div className="grid grid-cols-2 gap-2">
+                      {filteredVisualizers.map((v) => (
+                        <Button
+                          key={v.id}
+                          variant={visualizerId === v.id ? "default" : "outline"}
+                          onClick={() => setVisualizerId(v.id)}
+                          className="justify-start text-left h-auto py-3 px-4"
+                        >
+                          <div className="flex flex-col items-start">
+                            <span className="text-sm font-medium">{v.name}</span>
+                            <span className="text-xs text-muted-foreground opacity-70">
+                              {v.dimension.toUpperCase()} · {v.description}
+                            </span>
+                          </div>
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 音频文件选择 */}
+                  <div className="space-y-3">
+                    <h4 className="text-sm font-medium">音频</h4>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="audio/*"
+                      className="hidden"
+                      onChange={onFileChange}
+                    />
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="flex-1"
+                      >
+                        选择音频文件
+                      </Button>
+                      <Button onClick={togglePlay} disabled={!loaded}>
+                        {playing ? "暂停" : "播放"}
+                      </Button>
+                    </div>
+                    {fileName && (
+                      <p className="text-sm text-muted-foreground truncate">
+                        当前: {fileName}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* 录制 */}
+                  <div className="space-y-3">
+                    <h4 className="text-sm font-medium">录制</h4>
+                    <Button
+                      variant={recording ? "destructive" : "secondary"}
+                      onClick={onToggleRecord}
+                      disabled={!loaded || !canvasRef.current}
+                      className="w-full"
+                    >
+                      {recording ? "停止并导出" : "开始录制"}
                     </Button>
                   </div>
-                  {fileName && (
-                    <p className="text-sm text-muted-foreground truncate">
-                      当前: {fileName}
-                    </p>
-                  )}
-                </div>
 
-                {/* 录制 */}
-                <div className="space-y-3">
-                  <h4 className="text-sm font-medium">录制</h4>
-                  <Button
-                    variant={recording ? "destructive" : "secondary"}
-                    onClick={onToggleRecord}
-                    disabled={!loaded || !canvasRef.current}
-                    className="w-full"
-                  >
-                    {recording ? "停止并导出" : "开始录制"}
-                  </Button>
-                </div>
+                  {/* 歌词识别 */}
+                  <div className="space-y-3">
+                    <h4 className="text-sm font-medium">歌词识别</h4>
+                    <Button
+                      variant={lyricsEnabled ? "default" : "outline"}
+                      onClick={() => setLyricsEnabled((v) => !v)}
+                      disabled={asrLoading}
+                      className="w-full"
+                    >
+                      {asrLoading
+                        ? "加载中..."
+                        : lyricsEnabled
+                          ? "歌词识别已开启"
+                          : "开启歌词识别"}
+                    </Button>
+                    {asrError && (
+                      <p className="text-xs text-destructive">{asrError}</p>
+                    )}
+                  </div>
 
-                {/* 歌词识别 */}
-                <div className="space-y-3">
-                  <h4 className="text-sm font-medium">歌词识别</h4>
-                  <Button
-                    variant={lyricsEnabled ? "default" : "outline"}
-                    onClick={() => setLyricsEnabled((v) => !v)}
-                    disabled={asrLoading}
-                    className="w-full"
-                  >
-                    {asrLoading
-                      ? "加载中..."
-                      : lyricsEnabled
-                        ? "歌词识别已开启"
-                        : "开启歌词识别"}
-                  </Button>
-                  {asrError && (
-                    <p className="text-xs text-destructive">{asrError}</p>
-                  )}
+                  {/* 氛围强度 */}
+                  <div className="space-y-3">
+                    <h4 className="text-sm font-medium">
+                      氛围强度: {intensity.toFixed(1)}
+                    </h4>
+                    <Slider
+                      min={0.5}
+                      max={2}
+                      step={0.1}
+                      value={[intensity]}
+                      onValueChange={(v) => {
+                        const values = Array.isArray(v) ? v : [v];
+                        setIntensity(values[0] ?? 1.2);
+                      }}
+                    />
+                  </div>
                 </div>
+              </DrawerContent>
+            </Drawer>
 
-                {/* 氛围强度 */}
-                <div className="space-y-3">
-                  <h4 className="text-sm font-medium">
-                    氛围强度: {intensity.toFixed(1)}
-                  </h4>
-                  <Slider
-                    min={0.5}
-                    max={2}
-                    step={0.1}
-                    value={[intensity]}
-                    onValueChange={(v) => {
-                      const values = Array.isArray(v) ? v : [v];
-                      setIntensity(values[0] ?? 1.2);
-                    }}
-                  />
-                </div>
-              </div>
-            </DrawerContent>
-          </Drawer>
-
-          {/* 全屏按钮 */}
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={toggleFullscreen}
-            className="text-white hover:bg-white/20"
-          >
-            {isFullscreen ? <ExitFullscreenIcon /> : <FullscreenIcon />}
-          </Button>
+            {/* 全屏按钮 */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleFullscreen}
+              className="text-white hover:bg-white/20"
+            >
+              {isFullscreen ? <ExitFullscreenIcon /> : <FullscreenIcon />}
+            </Button>
+          </div>
         </div>
       </div>
 
-      {/* Canvas 可视化区域 */}
-      <Canvas
-        className="size-full"
-        camera={{ position: [0, 0, 5], fov: 55 }}
-        gl={{ antialias: true }}
-        onCreated={({ gl }) => {
-          canvasRef.current = gl.domElement;
-        }}
-      >
-        <color attach="background" args={["#0f172a"]} />
-        <ambientLight intensity={0.5} />
-        <pointLight position={[10, 10, 10]} intensity={1} />
-        <VisualizerScene />
-      </Canvas>
+      {/* 可视化区域 - 使用 key 强制组件重新挂载，避免 R3F hooks 上下文问题 */}
+      <div key={visualizerId} className="size-full">
+        <VisualizerComponent
+          featuresRef={featuresRef}
+          intensity={intensity}
+          onCanvasReady={(canvas) => {
+            canvasRef.current = canvas;
+          }}
+        />
+      </div>
 
       {/* 歌词覆盖层 */}
       <LyricsOverlay
