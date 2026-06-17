@@ -1,4 +1,4 @@
-import { Graphics } from "pixi.js";
+import { Filter, Graphics } from "pixi.js";
 import { GlowFilter } from "@pixi/filter-glow";
 import { GodrayFilter } from "@pixi/filter-godray";
 import { RGBSplitFilter } from "@pixi/filter-rgb-split";
@@ -279,8 +279,8 @@ export function SweetPartyScene(props: VisualizerProps) {
           alpha: 0.28,
         });
         const rgbFilter = new RGBSplitFilter([-1.2, 0], [0, 0.8], [1.2, 0]);
-        rays.filters = [godrayFilter];
-        shapes.filters = [glowFilter, rgbFilter];
+        rays.filters = [godrayFilter as unknown as Filter];
+        shapes.filters = [glowFilter as unknown as Filter, rgbFilter as unknown as Filter];
 
         const audio = createAudioResponse(featuresRef);
         const engine = Matter.Engine.create({
