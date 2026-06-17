@@ -1,11 +1,28 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AudioEngine } from "~/lib/audio/engine";
 import { extractAudioFeatures } from "~/lib/audio/analyze";
 import { detectMood, type SongMood } from "~/lib/audio/mood";
 import {
+  addTrack,
+  getCurrentTrackId,
+  getLibrary,
+  getTrack,
+  removeTrack as removeStoredTrack,
+  setCurrentTrackId,
+  trackToFile,
+  type StoredTrack,
+} from "~/lib/storage/audio-store";
+import {
   EMPTY_AUDIO_FEATURES,
   type AudioFeatures,
 } from "~/lib/audio/types";
+
+export function formatAudioTime(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 export function useAudioEngine() {
   const engineRef = useRef<AudioEngine | null>(null);
@@ -16,16 +33,56 @@ export function useAudioEngine() {
   const [features, setFeatures] = useState<AudioFeatures>(EMPTY_AUDIO_FEATURES);
   const [playing, setPlaying] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [fileName, setFileName] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(true);
+  const [library, setLibrary] = useState<StoredTrack[]>([]);
+  const [currentTrackId, setCurrentTrackIdState] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
   const [detectedMood, setDetectedMood] = useState<SongMood>("slow");
   const moodTimerRef = useRef(0);
 
+  const currentTrack =
+    library.find((t) => t.id === currentTrackId) ?? null;
+
+  const refreshLibrary = useCallback(async () => {
+    const [tracks, activeId] = await Promise.all([
+      getLibrary(),
+      getCurrentTrackId(),
+    ]);
+    setLibrary(tracks);
+    setCurrentTrackIdState(activeId);
+    return { tracks, activeId };
+  }, []);
+
+  const loadTrackById = useCallback(async (id: string, autoplay = false) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const track = await getTrack(id);
+    if (!track) return;
+    const file = trackToFile(track);
+    await engine.loadFile(file);
+    await setCurrentTrackId(id);
+    setCurrentTrackIdState(id);
+    setLoaded(true);
+    setDuration(engine.getDuration());
+    setCurrentTime(0);
+    if (autoplay) await engine.play();
+  }, []);
+
   useEffect(() => {
+    let disposed = false;
     const engine = new AudioEngine();
     engineRef.current = engine;
     const analyser = engine.getAnalyser();
     frequencyRef.current = new Uint8Array(analyser.frequencyBinCount);
     waveformRef.current = new Uint8Array(analyser.fftSize);
+
+    engine.onTimeUpdate(() => {
+      if (disposed) return;
+      setCurrentTime(engine.getCurrentTime());
+      const d = engine.getDuration();
+      if (d > 0) setDuration(d);
+    });
 
     let frame = 0;
     const tick = () => {
@@ -49,19 +106,65 @@ export function useAudioEngine() {
     };
     frame = requestAnimationFrame(tick);
 
+    void (async () => {
+      try {
+        const { tracks, activeId } = await refreshLibrary();
+        if (disposed) return;
+        if (activeId && tracks.some((t) => t.id === activeId)) {
+          await loadTrackById(activeId);
+        }
+      } catch {
+        // 缓存损坏时静默忽略
+      } finally {
+        if (!disposed) setRestoring(false);
+      }
+    })();
+
     return () => {
+      disposed = true;
       cancelAnimationFrame(frame);
+      engine.onTimeUpdate(null);
       engine.dispose();
       engineRef.current = null;
     };
-  }, []);
+  }, [loadTrackById, refreshLibrary]);
 
-  const loadFile = async (file: File) => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    await engine.loadFile(file);
-    setLoaded(true);
-    setFileName(file.name);
+  const addFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files);
+    if (list.length === 0) return;
+    let lastId: string | null = null;
+    for (const file of list) {
+      const track = await addTrack(file);
+      lastId = track.id;
+    }
+    await refreshLibrary();
+    if (lastId) await loadTrackById(lastId, true);
+  };
+
+  const selectTrack = async (id: string) => {
+    const wasPlaying = engineRef.current?.playing ?? false;
+    await loadTrackById(id, wasPlaying);
+  };
+
+  const removeTrack = async (id: string) => {
+    const wasCurrent = id === currentTrackId;
+    await removeStoredTrack(id);
+    const { tracks, activeId } = await refreshLibrary();
+    if (wasCurrent) {
+      if (activeId) await loadTrackById(activeId);
+      else {
+        engineRef.current?.stop();
+        setLoaded(false);
+        setCurrentTime(0);
+        setDuration(0);
+      }
+    }
+    if (tracks.length === 0) setPlaying(false);
+  };
+
+  const seek = (time: number) => {
+    engineRef.current?.seek(time);
+    setCurrentTime(time);
   };
 
   const play = async () => {
@@ -85,9 +188,17 @@ export function useAudioEngine() {
     featuresRef,
     playing,
     loaded,
-    fileName,
+    restoring,
+    library,
+    currentTrack,
+    currentTrackId,
+    currentTime,
+    duration,
     detectedMood,
-    loadFile,
+    addFiles,
+    selectTrack,
+    removeTrack,
+    seek,
     play,
     pause,
     togglePlay,

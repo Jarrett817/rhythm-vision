@@ -1,209 +1,127 @@
-import type { ComponentType, RefObject } from "react";
-import type { AudioFeatures } from "~/lib/audio/types";
-import type { SongMood } from "~/lib/audio/mood";
-import { DreamRainScene } from "~/features/visualizers/dream-rain";
-import { PetalDriftScene } from "~/features/visualizers/petal-drift";
-import { EtherealGlowScene } from "~/features/visualizers/ethereal-glow";
-import { ThunderFuryScene } from "~/features/visualizers/thunder-fury";
-import { PulseRushScene } from "~/features/visualizers/pulse-rush";
-import { OceanHorizonScene } from "~/features/visualizers/ocean-horizon";
-import { NeonMetropolisScene } from "~/features/visualizers/neon-metropolis";
-import { InkMistScene } from "~/features/visualizers/2d/ink-mist";
-import { SunDustScene } from "~/features/visualizers/2d/sun-dust";
-import { EmberCrackScene } from "~/features/visualizers/2d/ember-crack";
-import { GentleTideScene } from "~/features/visualizers/2d/gentle-tide";
-import { NeonStreamScene } from "~/features/visualizers/2d/neon-stream";
-import { SeaShimmerScene } from "~/features/visualizers/2d/sea-shimmer";
-import { CyberStreetScene } from "~/features/visualizers/2d/cyber-street";
+import type { RefObject } from "react";
 
+/** 精 curated：意象清晰、频段分工明确 */
 export type VisualizerId =
-  | "dream-rain"
-  | "petal-drift"
-  | "ethereal-glow"
-  | "thunder-fury"
+  | "gentle-tide"
   | "pulse-rush"
+  | "dream-rain"
+  | "ink-mist"
+  | "ethereal-glow"
   | "ocean-horizon"
   | "neon-metropolis"
-  | "ink-mist"
-  | "sun-dust"
-  | "ember-crack"
-  | "gentle-tide"
-  | "neon-stream"
-  | "sea-shimmer"
-  | "cyber-street";
+  | "sweet-party";
 
 export type VisualizerCategory = "abstract" | "landscape";
 
 export interface VisualizerProps {
-  featuresRef: RefObject<AudioFeatures>;
+  featuresRef: RefObject<import("~/lib/audio/types").AudioFeatures>;
   intensity: number;
   onCanvasReady?: (canvas: HTMLCanvasElement) => void;
 }
 
-export interface VisualizerDefinition {
+/** 场景元数据（不含组件，便于拆包） */
+export interface VisualizerMeta {
   id: VisualizerId;
   name: string;
   dimension: "2d" | "3d";
   category: VisualizerCategory;
-  moods: SongMood[];
   description: string;
-  Component: ComponentType<VisualizerProps>;
+  imagery: string;
+  audioMap: string;
 }
 
-export const VISUALIZERS: VisualizerDefinition[] = [
-  {
-    id: "dream-rain",
-    name: "落雨梦境",
-    dimension: "3d",
-    category: "abstract",
-    moods: ["sad", "slow"],
-    description: "冷雨、水雾、深蓝夜色",
-    Component: DreamRainScene,
-  },
-  {
-    id: "ink-mist",
-    name: "水墨烟岚",
-    dimension: "2d",
-    category: "abstract",
-    moods: ["sad"],
-    description: "2D 水墨滴落，低饱和蓝灰",
-    Component: InkMistScene,
-  },
-  {
-    id: "petal-drift",
-    name: "落花流转",
-    dimension: "3d",
-    category: "abstract",
-    moods: ["joyful"],
-    description: "粉瓣飘落，暖色柔光",
-    Component: PetalDriftScene,
-  },
-  {
-    id: "sun-dust",
-    name: "日光微尘",
-    dimension: "2d",
-    category: "abstract",
-    moods: ["joyful"],
-    description: "2D 金色微粒，轻盈闪烁",
-    Component: SunDustScene,
-  },
-  {
-    id: "thunder-fury",
-    name: "雷霆怒焰",
-    dimension: "3d",
-    category: "abstract",
-    moods: ["angry"],
-    description: "暗红闪电、余烬升腾",
-    Component: ThunderFuryScene,
-  },
-  {
-    id: "ember-crack",
-    name: "裂焰碎芒",
-    dimension: "2d",
-    category: "abstract",
-    moods: ["angry"],
-    description: "2D 放射碎裂，高对比暗红",
-    Component: EmberCrackScene,
-  },
-  {
-    id: "ethereal-glow",
-    name: "朦胧极光",
-    dimension: "3d",
-    category: "abstract",
-    moods: ["slow"],
-    description: "光核呼吸，星雾缓慢流转",
-    Component: EtherealGlowScene,
-  },
+export const VISUALIZER_META: VisualizerMeta[] = [
   {
     id: "gentle-tide",
     name: "潮汐慢涌",
     dimension: "2d",
     category: "abstract",
-    moods: ["slow"],
-    description: "2D 多层柔波，深蓝渐变",
-    Component: GentleTideScene,
+    imagery: "深夜海潮，月下水纹层层推近",
+    audioMap: "低频抬浪 · 中频推速 · 高频染蓝 · 响度呼吸",
+    description: "多层柔波，像潮水一遍遍漫过沙滩",
   },
   {
     id: "pulse-rush",
     name: "脉冲疾驰",
     dimension: "3d",
     category: "abstract",
-    moods: ["fast"],
-    description: "高速脉冲环，霓虹轨迹",
-    Component: PulseRushScene,
+    imagery: "隧道中光速粒子，鼓点激起冲击波",
+    audioMap: "低频脉冲环 · 中频旋转 · 高频粒子 · 节拍冲击波",
+    description: "环形脉冲与粒子隧道，适合快歌",
   },
   {
-    id: "neon-stream",
-    name: "霓虹疾流",
+    id: "dream-rain",
+    name: "落雨梦境",
+    dimension: "3d",
+    category: "abstract",
+    imagery: "月夜海面，细雨丝落涟漪",
+    audioMap: "低频雨势 · 中频风飘 · 高频波光",
+    description: "真实海面反光、月光朦胧、线状落雨",
+  },
+  {
+    id: "ink-mist",
+    name: "水墨烟岚",
     dimension: "2d",
     category: "abstract",
-    moods: ["fast"],
-    description: "2D 水平光流，节奏驱动",
-    Component: NeonStreamScene,
+    imagery: "月照远山，墨晕空蒙",
+    audioMap: "低频墨晕 · 中频雾带 · 高频雨丝",
+    description: "山水剪影、水墨晕染与月雾",
   },
-  // —— 景观 ——
+  {
+    id: "ethereal-glow",
+    name: "朦胧极光",
+    dimension: "3d",
+    category: "abstract",
+    imagery: "极光圈绕光核，星尘缓慢流转",
+    audioMap: "低频光核 · 中频环扩 · 高频星尘",
+    description: "慢速呼吸感，适合冥想式慢歌",
+  },
   {
     id: "ocean-horizon",
     name: "海平晚潮",
     dimension: "3d",
     category: "landscape",
-    moods: ["slow", "sad", "joyful"],
-    description: "3D Shader 海面、日落天际、波光粼粼",
-    Component: OceanHorizonScene,
-  },
-  {
-    id: "sea-shimmer",
-    name: "海面微光",
-    dimension: "2d",
-    category: "landscape",
-    moods: ["slow", "sad"],
-    description: "2D 海平线、落日、多层海浪与水面反光",
-    Component: SeaShimmerScene,
+    imagery: "日落海平线，Shader 波浪与余晖",
+    audioMap: "低频浪高 · 中频涌速 · 高频波光",
+    description: "3D 海面景观",
   },
   {
     id: "neon-metropolis",
     name: "霓虹都市",
     dimension: "3d",
     category: "landscape",
-    moods: ["fast", "joyful", "angry"],
-    description: "3D 天际线、窗灯闪烁、湿街霓虹",
-    Component: NeonMetropolisScene,
+    imagery: "雨夜天际线，窗灯与湿街霓虹",
+    audioMap: "低频楼影 · 中频窗灯 · 高频招牌",
+    description: "3D 都市夜景",
   },
   {
-    id: "cyber-street",
-    name: "赛博街景",
+    id: "sweet-party",
+    name: "甜心派对",
     dimension: "2d",
-    category: "landscape",
-    moods: ["fast", "joyful"],
-    description: "2D 都市剪影、霓虹招牌、地面倒影",
-    Component: CyberStreetScene,
+    category: "abstract",
+    imagery: "糖果竖条流转，镂空爱心星形飘落堆积",
+    audioMap: "低频震堆 · 中频飘带 · 高频落心",
+    description: "动感变色竖条，心星空中涌现落底堆积",
   },
 ];
 
-export const MOOD_VISUALIZERS = {
-  sad: VISUALIZERS.filter((v) => v.moods.includes("sad")),
-  joyful: VISUALIZERS.filter((v) => v.moods.includes("joyful")),
-  angry: VISUALIZERS.filter((v) => v.moods.includes("angry")),
-  slow: VISUALIZERS.filter((v) => v.moods.includes("slow")),
-  fast: VISUALIZERS.filter((v) => v.moods.includes("fast")),
-} as const;
+/** @deprecated 使用 VISUALIZER_META */
+export const VISUALIZERS = VISUALIZER_META;
 
-export const LANDSCAPE_VISUALIZERS = VISUALIZERS.filter(
-  (v) => v.category === "landscape",
-);
+/** @deprecated 使用 VisualizerMeta */
+export type VisualizerDefinition = VisualizerMeta;
 
 export function getVisualizer(id: VisualizerId) {
-  return VISUALIZERS.find((v) => v.id === id);
-}
-
-export function getDefaultForMood(mood: SongMood): VisualizerId {
-  const list = MOOD_VISUALIZERS[mood];
-  return list[0]?.id ?? "dream-rain";
+  return VISUALIZER_META.find((v) => v.id === id);
 }
 
 export function getVisualizersByCategory(
   category: VisualizerCategory | "all",
-): VisualizerDefinition[] {
-  if (category === "all") return VISUALIZERS;
-  return VISUALIZERS.filter((v) => v.category === category);
+) {
+  if (category === "all") return VISUALIZER_META;
+  return VISUALIZER_META.filter((v) => v.category === category);
+}
+
+export function getDefaultVisualizer(): VisualizerId {
+  return "gentle-tide";
 }

@@ -3,7 +3,7 @@ import { Button } from "~/components/ui/button";
 
 export function SiteHeader({
   cta = "进入创作",
-  ctaTo = "/player",
+  ctaTo = "/",
 }: {
   cta?: string;
   ctaTo?: string;

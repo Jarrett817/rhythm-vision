@@ -1,4 +1,5 @@
 import { Application } from "pixi.js";
+import { motion } from "motion/react";
 import { useEffect, useRef, type RefObject } from "react";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
@@ -64,6 +65,9 @@ export function PixiVisualizer({
       }
 
       app = application;
+      application.canvas.style.display = "block";
+      application.canvas.style.width = "100%";
+      application.canvas.style.height = "100%";
       container.appendChild(application.canvas);
       onCanvasReadyRef.current?.(application.canvas as HTMLCanvasElement);
 
@@ -99,5 +103,13 @@ export function PixiVisualizer({
     };
   }, [bg, featuresRef]);
 
-  return <div ref={containerRef} className="size-full" />;
+  return (
+    <motion.div
+      ref={containerRef}
+      className="absolute inset-0 size-full min-h-0 min-w-0"
+      initial={{ opacity: 0, scale: 0.985 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+    />
+  );
 }

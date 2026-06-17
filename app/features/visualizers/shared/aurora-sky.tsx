@@ -1,17 +1,22 @@
 import { useFrame } from "@react-three/fiber";
 import { useMemo, useRef, type RefObject } from "react";
 import * as THREE from "three";
+import CustomShaderMaterial from "three-custom-shader-material";
+import CSM from "three-custom-shader-material/vanilla";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { SkyTheme } from "~/features/visualizers/shared/themes";
+import { GLSL_CLASSIC_NOISE_2D } from "~/lib/glsl/noise-chunks";
 
-const vertexShader = /* glsl */ `
+const auroraVertex = /* glsl */ `
 varying vec2 vUv;
 void main() {
   vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}`;
+}
+`;
 
-const fragmentShader = /* glsl */ `
+const auroraFragment = /* glsl */ `
+${GLSL_CLASSIC_NOISE_2D}
+
 uniform float uTime;
 uniform float uEnergy;
 uniform float uMid;
@@ -19,19 +24,23 @@ uniform float uTreble;
 uniform vec3 uColor1;
 uniform vec3 uColor2;
 uniform vec3 uColor3;
+
 varying vec2 vUv;
 
 void main() {
   vec2 uv = vUv;
-  float band1 = sin(uv.x * 5.0 + uTime * 0.35) * 0.5 + 0.5;
-  float band2 = sin(uv.y * 4.0 - uTime * 0.22 + band1 * 2.5) * 0.5 + 0.5;
-  float swirl = sin((uv.x * 2.0 + uv.y * 3.0) + uTime * 0.18) * 0.5 + 0.5;
+  float n1 = cnoise(uv * 3.5 + vec2(uTime * 0.08, -uTime * 0.05));
+  float n2 = cnoise(uv * 5.0 + vec2(-uTime * 0.06, uTime * 0.09));
+  float band1 = sin(uv.x * 5.0 + uTime * 0.35 + n1 * 1.2) * 0.5 + 0.5;
+  float band2 = sin(uv.y * 4.0 - uTime * 0.22 + n2 * 1.4) * 0.5 + 0.5;
+  float swirl = sin((uv.x * 2.0 + uv.y * 3.0) + uTime * 0.18 + n1 * 0.8) * 0.5 + 0.5;
   vec3 col = mix(uColor1, uColor2, band1);
   col = mix(col, uColor3, band2 * (0.35 + uEnergy * 0.65));
-  col += swirl * uTreble * 0.15;
+  col += swirl * uTreble * 0.18;
   col *= 0.85 + uMid * 0.3;
-  gl_FragColor = vec4(col, 1.0);
-}`;
+  csm_FragColor = vec4(col, 1.0);
+}
+`;
 
 export function AuroraSky({
   featuresRef,
@@ -40,7 +49,7 @@ export function AuroraSky({
   featuresRef: RefObject<AudioFeatures>;
   theme: SkyTheme;
 }) {
-  const matRef = useRef<THREE.ShaderMaterial>(null);
+  const matRef = useRef<CSM<typeof THREE.MeshBasicMaterial>>(null);
   const uniforms = useMemo(
     () => ({
       uTime: { value: 0 },
@@ -67,10 +76,11 @@ export function AuroraSky({
   return (
     <mesh position={[0, 2, -35]} rotation={[0.1, 0, 0]}>
       <planeGeometry args={[120, 70]} />
-      <shaderMaterial
+      <CustomShaderMaterial
         ref={matRef}
-        vertexShader={vertexShader}
-        fragmentShader={fragmentShader}
+        baseMaterial={THREE.MeshBasicMaterial}
+        vertexShader={auroraVertex}
+        fragmentShader={auroraFragment}
         uniforms={uniforms}
         depthWrite={false}
       />

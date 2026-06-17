@@ -8,6 +8,8 @@ import {
 } from "react-router";
 
 import type { Route } from "./+types/root";
+import { TooltipProvider } from "~/components/ui/tooltip";
+import "~/lib/three/dev-warnings";
 import "./app.css";
 
 export const links: Route.LinksFunction = () => [
@@ -33,7 +35,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Links />
       </head>
       <body>
-        {children}
+        <TooltipProvider>{children}</TooltipProvider>
         <ScrollRestoration />
         <Scripts />
       </body>

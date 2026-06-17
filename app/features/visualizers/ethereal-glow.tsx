@@ -5,6 +5,9 @@ import * as THREE from "three";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
 import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postprocessing";
+import { ThreeVisualizerShell } from "~/features/visualizers/shared/three-visualizer-shell";
+import { SceneSpringEntry } from "~/features/visualizers/shared/scene-spring-entry";
+import { SceneEnvironment } from "~/features/visualizers/shared/scene-environment";
 import {
   useAudioResponse,
   SmoothValue,
@@ -318,6 +321,7 @@ export function EtherealGlowScene({
   onCanvasReady,
 }: VisualizerProps) {
   return (
+    <ThreeVisualizerShell>
     <Canvas
       className="size-full"
       camera={{ position: [0, 0, 10], fov: 55 }}
@@ -327,7 +331,9 @@ export function EtherealGlowScene({
         onCanvasReady?.(gl.domElement);
       }}
     >
+      <SceneSpringEntry>
       <Suspense fallback={null}>
+        <SceneEnvironment variant="night" intensity={0.52} />
         <color attach="background" args={["#05040f"]} />
         <ambientLight intensity={0.1} color="#a78bfa" />
         <pointLight position={[0, 0, 4]} intensity={2.5} color="#ddd6fe" distance={30} />
@@ -339,6 +345,8 @@ export function EtherealGlowScene({
 
         <DreamyPostProcessing intensity={intensity} />
       </Suspense>
+      </SceneSpringEntry>
     </Canvas>
+    </ThreeVisualizerShell>
   );
 }

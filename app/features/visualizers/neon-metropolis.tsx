@@ -6,6 +6,9 @@ import type { VisualizerProps } from "~/features/visualizers/catalog";
 import { AuroraSky } from "~/features/visualizers/shared/aurora-sky";
 import { SceneSparkles } from "~/features/visualizers/shared/flow-ribbons";
 import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postprocessing";
+import { ThreeVisualizerShell } from "~/features/visualizers/shared/three-visualizer-shell";
+import { SceneSpringEntry } from "~/features/visualizers/shared/scene-spring-entry";
+import { SceneEnvironment } from "~/features/visualizers/shared/scene-environment";
 import { SKY_THEMES } from "~/features/visualizers/shared/themes";
 import { useAudioResponse, SmoothValue } from "~/features/visualizers/shared/audio-response";
 
@@ -367,6 +370,7 @@ export function NeonMetropolisScene({
   const theme = SKY_THEMES.city;
 
   return (
+    <ThreeVisualizerShell>
     <Canvas
       className="size-full"
       camera={{ position: [0, 1, 10], fov: 58 }}
@@ -376,7 +380,9 @@ export function NeonMetropolisScene({
         onCanvasReady?.(gl.domElement);
       }}
     >
+      <SceneSpringEntry>
       <Suspense fallback={null}>
+        <SceneEnvironment variant="city" intensity={0.42} />
         <AuroraSky featuresRef={featuresRef} theme={theme} />
         <ambientLight intensity={0.08} color="#a78bfa" />
         <pointLight position={[0, 5, 0]} intensity={1.5} color="#e879f9" distance={30} />
@@ -390,6 +396,8 @@ export function NeonMetropolisScene({
 
         <DreamyPostProcessing intensity={intensity} />
       </Suspense>
+      </SceneSpringEntry>
     </Canvas>
+    </ThreeVisualizerShell>
   );
 }

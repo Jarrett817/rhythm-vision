@@ -13,6 +13,10 @@
 html,
 body {
   @apply bg-white dark:bg-gray-950;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
 
   @media (prefers-color-scheme: dark) {
     color-scheme: dark;
@@ -141,4 +145,29 @@ body {
   html {
     @apply font-sans;
   }
+}
+
+/* 全屏可视化：保证 2D/3D canvas 铺满视口 */
+.home-shell {
+  position: fixed;
+  inset: 0;
+  width: 100dvw;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.visualizer-viewport {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.visualizer-viewport > div,
+.visualizer-viewport canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
 }

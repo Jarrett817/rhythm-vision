@@ -35,13 +35,24 @@ export function synthesizeDemoFeatures(time: number): AudioFeatures {
   for (let i = third * 2; i < binCount; i++) trebleSum += frequencyData[i]!;
 
   const rms = 0.12 + pulse * 0.18 + swell * 0.08;
+  const subBass = (bassSum / third / 255) * 0.9;
+  const bass = bassSum / third / 255;
+  const mid = midSum / third / 255;
+  const highMid = mid * 0.85;
+  const treble = trebleSum / (binCount - third * 2) / 255 + shimmer * 0.1;
+  const brightness = 0.35 + treble * 0.4 + mid * 0.2;
 
   return {
     frequencyData,
     waveformData,
     rms,
-    bass: bassSum / third / 255,
-    mid: midSum / third / 255,
-    treble: trebleSum / (binCount - third * 2) / 255 + shimmer * 0.1,
+    subBass,
+    bass,
+    mid,
+    highMid,
+    treble,
+    brightness,
+    beat: pulse > 0.65,
+    beatStrength: Math.max(0, pulse - 0.5) * 2,
   };
 }

@@ -6,6 +6,9 @@ import type { VisualizerProps } from "~/features/visualizers/catalog";
 import { AuroraSky } from "~/features/visualizers/shared/aurora-sky";
 import { FlowRibbons, SceneSparkles } from "~/features/visualizers/shared/flow-ribbons";
 import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postprocessing";
+import { ThreeVisualizerShell } from "~/features/visualizers/shared/three-visualizer-shell";
+import { SceneSpringEntry } from "~/features/visualizers/shared/scene-spring-entry";
+import { SceneEnvironment } from "~/features/visualizers/shared/scene-environment";
 import { SKY_THEMES } from "~/features/visualizers/shared/themes";
 import { useAudioResponse, SmoothValue } from "~/features/visualizers/shared/audio-response";
 
@@ -329,6 +332,7 @@ export function PulseRushScene({
   const theme = SKY_THEMES.fast;
 
   return (
+    <ThreeVisualizerShell>
     <Canvas
       className="size-full"
       camera={{ position: [0, 0, 9], fov: 65 }}
@@ -338,7 +342,9 @@ export function PulseRushScene({
         onCanvasReady?.(gl.domElement);
       }}
     >
+      <SceneSpringEntry>
       <Suspense fallback={null}>
+        <SceneEnvironment variant="studio" intensity={0.38} />
         <AuroraSky featuresRef={featuresRef} theme={theme} />
         <ambientLight intensity={0.2} color="#0891b2" />
         <pointLight position={[0, 0, 3]} intensity={2.5} color="#22d3ee" distance={25} />
@@ -352,6 +358,8 @@ export function PulseRushScene({
 
         <DreamyPostProcessing intensity={intensity} />
       </Suspense>
+      </SceneSpringEntry>
     </Canvas>
+    </ThreeVisualizerShell>
   );
 }

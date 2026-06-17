@@ -25,12 +25,33 @@ export class AudioEngine {
     return this.analyser;
   }
 
+  getAudioContext() {
+    return this.context;
+  }
+
   getAudioBuffer() {
     return this.audioBuffer;
   }
 
   getCurrentTime() {
     return this.audio.currentTime;
+  }
+
+  getDuration() {
+    return Number.isFinite(this.audio.duration) ? this.audio.duration : 0;
+  }
+
+  seek(time: number) {
+    if (!this.loaded) return;
+    this.audio.currentTime = Math.max(0, Math.min(time, this.getDuration()));
+  }
+
+  onTimeUpdate(callback: (() => void) | null) {
+    this.audio.ontimeupdate = callback;
+  }
+
+  onEnded(callback: (() => void) | null) {
+    this.audio.onended = callback;
   }
 
   getRecordStream() {
