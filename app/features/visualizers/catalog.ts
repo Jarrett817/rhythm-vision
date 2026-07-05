@@ -4,10 +4,8 @@ import type { RefObject } from "react";
 export type VisualizerId =
   | "gentle-tide"
   | "pulse-rush"
-  | "dream-rain"
   | "ink-mist"
   | "ethereal-glow"
-  | "ocean-horizon"
   | "neon-metropolis"
   | "sweet-party";
 
@@ -50,15 +48,6 @@ export const VISUALIZER_META: VisualizerMeta[] = [
     description: "环形脉冲与粒子隧道，适合快歌",
   },
   {
-    id: "dream-rain",
-    name: "落雨梦境",
-    dimension: "3d",
-    category: "abstract",
-    imagery: "月夜海面，细雨丝落涟漪",
-    audioMap: "低频雨势 · 中频风飘 · 高频波光",
-    description: "真实海面反光、月光朦胧、线状落雨",
-  },
-  {
     id: "ink-mist",
     name: "水墨烟岚",
     dimension: "2d",
@@ -75,15 +64,6 @@ export const VISUALIZER_META: VisualizerMeta[] = [
     imagery: "极光圈绕光核，星尘缓慢流转",
     audioMap: "低频光核 · 中频环扩 · 高频星尘",
     description: "慢速呼吸感，适合冥想式慢歌",
-  },
-  {
-    id: "ocean-horizon",
-    name: "海平晚潮",
-    dimension: "3d",
-    category: "landscape",
-    imagery: "日落海平线，Shader 波浪与余晖",
-    audioMap: "低频浪高 · 中频涌速 · 高频波光",
-    description: "3D 海面景观",
   },
   {
     id: "neon-metropolis",

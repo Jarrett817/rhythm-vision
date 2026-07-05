@@ -1,6 +1,6 @@
 import { Canvas, useFrame } from "@react-three/fiber";
 import { MeshDistortMaterial, Sphere } from "@react-three/drei";
-import { useMemo, useRef, Suspense } from "react";
+import { useEffect, useMemo, useRef, Suspense } from "react";
 import * as THREE from "three";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
@@ -251,18 +251,48 @@ function ImpactBursts({
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const audio = useAudioResponse(featuresRef);
+  const MAX_BURSTS = 8;
   const bursts = useRef<
     { pos: THREE.Vector3; life: number; size: number; color: THREE.Color }[]
   >([]);
 
-  useFrame((state, delta) => {
+  const pool = useMemo(() => {
+    const geo = new THREE.SphereGeometry(1, 16, 16);
+    return Array.from({ length: MAX_BURSTS }, () => {
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({
+          transparent: true,
+          opacity: 0,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      );
+      mesh.visible = false;
+      return mesh;
+    });
+  }, []);
+
+  useEffect(() => {
     const group = groupRef.current;
     if (!group) return;
+    for (const mesh of pool) group.add(mesh);
+    return () => {
+      for (const mesh of pool) {
+        group.remove(mesh);
+        (mesh.material as THREE.Material).dispose();
+      }
+      pool[0]?.geometry.dispose();
+    };
+  }, [pool]);
+
+  useFrame((_, delta) => {
+    if (!groupRef.current) return;
 
     audio.update(delta);
 
     // Bass 冲击时产生爆发粒子
-    if (audio.isBeatDrop && bursts.current.length < 8) {
+    if (audio.isBeatDrop && bursts.current.length < MAX_BURSTS) {
       const angle = Math.random() * Math.PI * 2;
       const dist = 2 + Math.random() * 4;
       bursts.current.push({
@@ -284,31 +314,20 @@ function ImpactBursts({
       return b.life > 0;
     });
 
-    // 同步 mesh
-    while (group.children.length > bursts.current.length) {
-      group.remove(group.children[group.children.length - 1]!);
+    for (let i = 0; i < MAX_BURSTS; i++) {
+      const mesh = pool[i]!;
+      const b = bursts.current[i];
+      if (b) {
+        mesh.visible = true;
+        mesh.position.copy(b.pos);
+        mesh.scale.setScalar(b.size);
+        const mat = mesh.material as THREE.MeshBasicMaterial;
+        mat.opacity = b.life * 0.4;
+        mat.color.copy(b.color);
+      } else {
+        mesh.visible = false;
+      }
     }
-    while (group.children.length < bursts.current.length) {
-      const burst = new THREE.Mesh(
-        new THREE.SphereGeometry(1, 16, 16),
-        new THREE.MeshBasicMaterial({
-          transparent: true,
-          opacity: 0.5,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        }),
-      );
-      group.add(burst);
-    }
-
-    bursts.current.forEach((b, i) => {
-      const mesh = group.children[i] as THREE.Mesh;
-      mesh.position.copy(b.pos);
-      mesh.scale.setScalar(b.size);
-      const mat = mesh.material as THREE.MeshBasicMaterial;
-      mat.opacity = b.life * 0.4;
-      mat.color.copy(b.color);
-    });
   });
 
   return <group ref={groupRef} />;

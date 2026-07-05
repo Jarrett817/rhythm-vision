@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioEngine } from "~/lib/audio/engine";
+import { AudioEngine, type AudioInputMode } from "~/lib/audio/engine";
 import { extractAudioFeatures } from "~/lib/audio/analyze";
 import { detectMood, type SongMood } from "~/lib/audio/mood";
 import {
@@ -39,6 +39,8 @@ export function useAudioEngine() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [detectedMood, setDetectedMood] = useState<SongMood>("slow");
+  const [inputMode, setInputMode] = useState<AudioInputMode>("mic");
+  const [micError, setMicError] = useState<string | null>(null);
   const moodTimerRef = useRef(0);
 
   const currentTrack =
@@ -66,7 +68,34 @@ export function useAudioEngine() {
     setLoaded(true);
     setDuration(engine.getDuration());
     setCurrentTime(0);
+    setInputMode("file");
     if (autoplay) await engine.play();
+  }, []);
+
+  const startMic = useCallback(async () => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    try {
+      setMicError(null);
+      await engine.startMicrophone();
+      setInputMode("mic");
+      setPlaying(true);
+    } catch (err) {
+      setMicError(
+        err instanceof Error && err.name === "NotAllowedError"
+          ? "麦克风权限被拒绝，请在浏览器中允许后重试"
+          : "无法开启麦克风收音",
+      );
+      setInputMode("file");
+    }
+  }, []);
+
+  const stopMic = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.stopMicrophone();
+    setInputMode("file");
+    setPlaying(false);
   }, []);
 
   useEffect(() => {
@@ -85,22 +114,29 @@ export function useAudioEngine() {
     });
 
     let frame = 0;
+    let uiTick = 0;
+    let wasPlaying = false;
     const tick = () => {
-      if (engine.playing) {
+      const isPlaying = engine.playing;
+      if (isPlaying) {
         const next = extractAudioFeatures(
           analyser,
           frequencyRef.current,
           waveformRef.current,
         );
         featuresRef.current = next;
-        setFeatures(next);
-        setPlaying(true);
+        // UI 面板（band monitor）不需要 60fps，每 6 帧刷新一次即可，
+        // 避免每帧 setState 触发整棵组件树重渲染
+        uiTick += 1;
+        if (uiTick % 6 === 0) setFeatures(next);
         moodTimerRef.current += 1;
         if (moodTimerRef.current % 30 === 0) {
           setDetectedMood(detectMood(next));
         }
-      } else {
-        setPlaying(false);
+      }
+      if (isPlaying !== wasPlaying) {
+        wasPlaying = isPlaying;
+        setPlaying(isPlaying);
       }
       frame = requestAnimationFrame(tick);
     };
@@ -195,6 +231,10 @@ export function useAudioEngine() {
     currentTime,
     duration,
     detectedMood,
+    inputMode,
+    micError,
+    startMic,
+    stopMic,
     addFiles,
     selectTrack,
     removeTrack,

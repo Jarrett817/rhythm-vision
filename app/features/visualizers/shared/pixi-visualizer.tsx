@@ -55,7 +55,7 @@ export function PixiVisualizer({
         height,
         background: bg,
         antialias: true,
-        resolution: window.devicePixelRatio,
+        resolution: Math.min(window.devicePixelRatio, 2),
         autoDensity: true,
       });
 

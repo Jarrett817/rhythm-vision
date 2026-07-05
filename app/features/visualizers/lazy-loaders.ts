@@ -18,17 +18,9 @@ export const VISUALIZER_LOADERS: Record<VisualizerId, Loader> = {
     import("~/features/visualizers/pulse-rush").then((m) => ({
       default: m.PulseRushScene,
     })),
-  "dream-rain": () =>
-    import("~/features/visualizers/dream-rain").then((m) => ({
-      default: m.DreamRainScene,
-    })),
   "ethereal-glow": () =>
     import("~/features/visualizers/ethereal-glow").then((m) => ({
       default: m.EtherealGlowScene,
-    })),
-  "ocean-horizon": () =>
-    import("~/features/visualizers/ocean-horizon").then((m) => ({
-      default: m.OceanHorizonScene,
     })),
   "neon-metropolis": () =>
     import("~/features/visualizers/neon-metropolis").then((m) => ({

@@ -12,8 +12,6 @@ import type { AudioFeatures } from "~/lib/audio/types";
  */
 export class AudioLayeredResponse {
   private featuresRef: React.RefObject<AudioFeatures>;
-  private history: number[] = [];
-  private maxHistory = 60;
 
   // 平滑后的数值
   private smoothBass = 0;
@@ -52,12 +50,6 @@ export class AudioLayeredResponse {
       this.bassImpact = 1;
     } else {
       this.bassImpact *= Math.max(0, 1 - delta * 3);
-    }
-
-    // 历史记录（用于检测趋势）
-    this.history.push(this.smoothRms);
-    if (this.history.length > this.maxHistory) {
-      this.history.shift();
     }
   }
 

@@ -92,10 +92,8 @@ export function OceanWaterSurface({
         side={THREE.DoubleSide}
         roughness={0.22}
         metalness={0}
-        clearcoat={0.65}
-        clearcoatRoughness={0.2}
-        ior={1.333}
-        transmission={0.08}
+        clearcoat={0.6}
+        clearcoatRoughness={0.22}
         color="#0c4a6e"
       />
     </mesh>

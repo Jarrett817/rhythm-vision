@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect } from "react";
 import type { Route } from "./+types/home";
-import { Settings, Maximize2, Minimize2, Loader2, Circle } from "lucide-react";
+import { Settings, Maximize2, Minimize2, Loader2, Circle, Mic, Music } from "lucide-react";
 import { useAudioEngine } from "~/features/audio/use-audio-engine";
 import { useLiveTranscription } from "~/features/lyrics/use-live-transcription";
 import { useRecorder } from "~/features/export/use-recorder";
@@ -58,6 +58,10 @@ export default function Home() {
     loaded,
     currentTrack,
     currentTrackId,
+    inputMode,
+    micError,
+    startMic,
+    stopMic,
   } = audio;
 
   const {
@@ -141,6 +145,26 @@ export default function Home() {
     };
   }, []);
 
+  // 默认现场收音：浏览器要求 getUserMedia 必须由用户手势触发，
+  // 因此在首次任意交互时自动尝试开麦（仅当仍处于 mic 模式且未加载文件）
+  useEffect(() => {
+    if (inputMode !== "mic" || loaded) return;
+    let done = false;
+    const tryStart = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      void startMic();
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointerdown", tryStart);
+      window.removeEventListener("keydown", tryStart);
+    };
+    window.addEventListener("pointerdown", tryStart, { once: true });
+    window.addEventListener("keydown", tryStart, { once: true });
+    return cleanup;
+  }, [inputMode, loaded, startMic]);
+
   const onToggleRecord = async () => {
     if (recording) {
       const name = (currentTrack?.fileName ?? "rhythm-vision").replace(/\.[^.]+$/, "");
@@ -209,6 +233,37 @@ export default function Home() {
                 </DrawerHeader>
                 <div className="overflow-y-auto px-4 pb-8 space-y-6 max-h-[calc(100vh-5rem)]">
                   <AudioBandMonitor features={features} />
+
+                  <div className="space-y-3">
+                    <Label className="text-sm font-medium">音频源</Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button
+                        variant={inputMode === "mic" ? "default" : "outline"}
+                        onClick={() => startMic()}
+                      >
+                        <Mic className="mr-1.5 size-4" />
+                        现场收音
+                      </Button>
+                      <Button
+                        variant={inputMode === "file" ? "default" : "outline"}
+                        onClick={() => stopMic()}
+                      >
+                        <Music className="mr-1.5 size-4" />
+                        音频文件
+                      </Button>
+                    </div>
+                    {inputMode === "mic" && (
+                      <p className="text-xs text-muted-foreground">
+                        正在实时收音，画面随现场声音律动
+                      </p>
+                    )}
+                    {micError && (
+                      <Alert variant="destructive">
+                        <AlertDescription>{micError}</AlertDescription>
+                      </Alert>
+                    )}
+                  </div>
+
                   <AudioLibraryPanel engine={audio} />
 
                   <Separator />

@@ -1,5 +1,5 @@
 import { Canvas, useFrame } from "@react-three/fiber";
-import { useMemo, useRef, Suspense } from "react";
+import { useEffect, useMemo, useRef, Suspense } from "react";
 import * as THREE from "three";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
@@ -211,12 +211,42 @@ function BassShockwaves({
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const audio = useAudioResponse(featuresRef);
-  const waves = useRef<{ life: number; dir: THREE.Vector3; speed: number }[]>([]);
   const maxWaves = 10;
+  const waves = useRef<{ life: number; dir: THREE.Vector3; speed: number }[]>([]);
 
-  useFrame((state, delta) => {
+  const pool = useMemo(() => {
+    const geo = new THREE.TorusGeometry(1, 0.02, 8, 64);
+    return Array.from({ length: maxWaves }, () => {
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({
+          color: "#00ffff",
+          transparent: true,
+          opacity: 0,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      );
+      mesh.visible = false;
+      return mesh;
+    });
+  }, []);
+
+  useEffect(() => {
     const group = groupRef.current;
     if (!group) return;
+    for (const mesh of pool) group.add(mesh);
+    return () => {
+      for (const mesh of pool) {
+        group.remove(mesh);
+        (mesh.material as THREE.Material).dispose();
+      }
+      pool[0]?.geometry.dispose();
+    };
+  }, [pool]);
+
+  useFrame((_, delta) => {
+    if (!groupRef.current) return;
 
     audio.update(delta);
 
@@ -241,34 +271,21 @@ function BassShockwaves({
       return w.life > 0;
     });
 
-    // 同步 mesh
-    while (group.children.length > waves.current.length) {
-      group.remove(group.children[group.children.length - 1]!);
+    for (let i = 0; i < maxWaves; i++) {
+      const mesh = pool[i]!;
+      const w = waves.current[i];
+      if (w) {
+        mesh.visible = true;
+        const size = (1 - w.life) * 12 * intensity;
+        mesh.scale.set(size, size, size);
+        mesh.lookAt(w.dir);
+        const mat = mesh.material as THREE.MeshBasicMaterial;
+        mat.opacity = w.life * 0.5;
+        mat.color.setHSL(0.5 + (1 - w.life) * 0.1, 1, 0.6);
+      } else {
+        mesh.visible = false;
+      }
     }
-    while (group.children.length < waves.current.length) {
-      const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(1, 0.02, 8, 64),
-        new THREE.MeshBasicMaterial({
-          color: "#00ffff",
-          transparent: true,
-          opacity: 0.8,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        }),
-      );
-      group.add(ring);
-    }
-
-    waves.current.forEach((w, i) => {
-      const mesh = group.children[i] as THREE.Mesh;
-      const size = (1 - w.life) * 12 * intensity;
-      mesh.scale.set(size, size, size);
-      mesh.lookAt(w.dir);
-
-      const mat = mesh.material as THREE.MeshBasicMaterial;
-      mat.opacity = w.life * 0.5;
-      mat.color.setHSL(0.5 + (1 - w.life) * 0.1, 1, 0.6);
-    });
   });
 
   return <group ref={groupRef} />;
