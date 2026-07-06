@@ -9,11 +9,11 @@ import { BlendFunction } from "postprocessing";
 
 export function DreamyPostProcessing({ intensity }: { intensity: number }) {
   return (
-    <EffectComposer multisampling={4}>
+    <EffectComposer multisampling={2}>
       <Bloom
         intensity={2 + intensity * 1.8}
-        luminanceThreshold={0.02}
-        luminanceSmoothing={0.92}
+        luminanceThreshold={0.2}
+        luminanceSmoothing={0.9}
         mipmapBlur
       />
       <ChromaticAberration

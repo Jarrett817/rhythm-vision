@@ -113,6 +113,23 @@ export function InkMistScene(props: VisualizerProps) {
         }));
         let t = 0;
 
+        // 宣纸底色 + 纤维噪点为静态层，仅初始与尺寸变化时重绘，避免每帧 320 次 circle
+        let paperW = 0;
+        let paperH = 0;
+        const drawPaper = (width: number, height: number) => {
+          paper.clear();
+          paper.rect(0, 0, width, height);
+          paper.fill({ color: 0xeae6dc, alpha: 1 });
+          for (let i = 0; i < PAPER_GRAIN; i++) {
+            const gx = hash01(i * 1.1) * width;
+            const gy = hash01(i * 2.3) * height;
+            paper.circle(gx, gy, 0.4 + hash01(i) * 0.6);
+            paper.fill({ color: 0x9a9080, alpha: 0.025 });
+          }
+          paperW = width;
+          paperH = height;
+        };
+
         const tick = () => {
           audio.update(0.016);
           const { width, height } = app.renderer;
@@ -122,22 +139,12 @@ export function InkMistScene(props: VisualizerProps) {
           t += 0.003 + energy * 0.018;
           const breath = 0.35 + rms * 1.2;
 
-          paper.clear();
+          if (width !== paperW || height !== paperH) drawPaper(width, height);
           sky.clear();
           ridges.clear();
           ink.clear();
           mist.clear();
           rain.clear();
-
-          // 宣纸底色 + 纤维噪点
-          paper.rect(0, 0, width, height);
-          paper.fill({ color: 0xeae6dc, alpha: 1 });
-          for (let i = 0; i < PAPER_GRAIN; i++) {
-            const gx = hash01(i * 1.1) * width;
-            const gy = hash01(i * 2.3) * height;
-            paper.circle(gx, gy, 0.4 + hash01(i) * 0.6);
-            paper.fill({ color: 0x9a9080, alpha: 0.025 });
-          }
 
           // 天光渐变（偏亮水墨昼景）
           for (let i = 0; i < 10; i++) {
