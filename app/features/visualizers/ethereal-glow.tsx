@@ -8,6 +8,7 @@ import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postp
 import { ThreeVisualizerShell } from "~/features/visualizers/shared/three-visualizer-shell";
 import { SceneSpringEntry } from "~/features/visualizers/shared/scene-spring-entry";
 import { SceneEnvironment } from "~/features/visualizers/shared/scene-environment";
+import { GradientBackdrop } from "~/features/visualizers/shared/gradient-backdrop";
 import {
   useAudioResponse,
   SmoothValue,
@@ -346,14 +347,14 @@ export function EtherealGlowScene({
       camera={{ position: [0, 0, 10], fov: 55 }}
       gl={{ antialias: true }}
       onCreated={({ gl, scene }) => {
-        scene.fog = new THREE.Fog("#08061a", 12, 40);
+        scene.fog = new THREE.Fog("#160f30", 14, 46);
         onCanvasReady?.(gl.domElement);
       }}
     >
       <SceneSpringEntry>
       <Suspense fallback={null}>
         <SceneEnvironment variant="night" intensity={0.52} />
-        <color attach="background" args={["#05040f"]} />
+        <GradientBackdrop top="#050418" horizon="#2b1a4d" bottom="#160f30" />
         <ambientLight intensity={0.1} color="#a78bfa" />
         <pointLight position={[0, 0, 4]} intensity={2.5} color="#ddd6fe" distance={30} />
 
