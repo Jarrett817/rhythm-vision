@@ -35,6 +35,9 @@ a singer without looking amateur?"* If not, it's failing one of the rules below.
    negative-space safe zone (the performer stands there).
 5. **Flat emissive/basic materials, no post** — no depth, no color grade, no cinematic finish.
    Cheapness lives here.
+6. **Hard-geometry stacking** — dozens of cubes/rings/triangles/lines piled on one plane, many
+   kinds at once, all moving at the same speed. This is the single most common WebGL-VJ tell.
+   The cure is depth layering + procedural soft texture (see the dedicated section below).
 
 ## Core principles
 
@@ -96,7 +99,42 @@ Rules of thumb:
 - Keep bloom disciplined: only genuinely bright accents should bloom, so raise the luminance
   threshold rather than flooding the frame.
 
-### 5. Narrative arc (bonus, for full scenes)
+### 5. Depth layering & geometry discipline — the anti-"cheap stacking" rule
+
+This is the WebGL-specific core. Cheap VJ = many hard geometries (cubes, rings, triangles,
+lines) piled on one plane, all spinning at the same speed. Fix it structurally:
+
+**Three separated depth planes, each with its own motion logic** — this alone creates
+professional parallax and stops everything clumping together:
+
+- **Far / base plane (slow):** nebula, gradient cloud, fbm-noise fluid, distant soft grid.
+  Low contrast, very low speed (`time * ~0.1`, roughly quarter-BPM drift). **No hard geometry
+  here** — it carries atmosphere and must never fight for attention.
+- **Mid / subject plane (rhythm):** the hero. **One single family of geometry** (e.g. one ring
+  array — not rings + cubes + stars together). Deforms/scales/moves only on beat/BPM
+  (`time * ~0.4`). Each song keeps 1–2 base forms, no more.
+- **Near / accent plane (burst):** thin lines, particles, light blades, chromatic glints,
+  scan lines. Hidden at low opacity normally; flash only on drops/strong beats (~0.2s), then
+  gone. Point accents, never a persistent layer.
+
+**Hard rule — per frame, ≤2 kinds of hard geometry on screen.** Everything else is fluid /
+noise / gradient soft texture. Aim for ~70% of the frame to be procedural soft texture
+(simplex/fbm/voronoi/fluid displacement), with hard geometry only as sparse visual anchors.
+
+**Motion desync (kills the "plastic" look):** the three planes never share a speed. Offset
+rotation, translation, and ripple onto different tempos, and add a small per-instance random
+time offset so same-family shapes don't move in lockstep — lockstep reads as cheap cloning.
+
+**Array discipline (stops full-screen geometry spam):**
+- **Falloff mask:** fade instance opacity toward the edges (radial/gradient), concentrate in a
+  region, leave the rest empty. Never a uniform full-bleed grid.
+- **Size variance:** randomize base size per instance; identical sizes read as a copy-paste.
+- **Count cap:** keep mesh instances modest (mid-size show ≈ ≤300 hard meshes). Beyond that,
+  switch to particle/sprite textures, not solid meshes.
+- **Dynamic thinning:** shed instances in calm sections, grow back into the climax — density is
+  a dynamic, not a constant.
+
+### 6. Narrative arc (bonus, for full scenes)
 
 A scene ideally breathes with the music's structure: intro (sparse setup) → verse (calm) →
 chorus/drop (bold expansion) → outro (dissipation). Even without section detection, design so
@@ -119,6 +157,9 @@ Before building a primitive, check these. The project standard is least-custom-c
   is the shared stack.
 - **2D:** PixiJS via `shared/pixi-visualizer.tsx`, plus `@pixi/filter-glow`,
   `@pixi/filter-godray`, `@pixi/filter-rgb-split` for stage glow / light beams / neon dispersion.
+- **Procedural noise:** `lib/glsl/noise-chunks.ts` (`GLSL_CLASSIC_NOISE_2D/3D`) for fbm/simplex
+  in shaders — prefer this over hard-geometry fields to fill space. `shared/aurora-sky.tsx` is a
+  working shader-plane example.
 - **Never put DOM/Motion components inside `<Canvas>`** — Canvas children must be Three/R3F objects.
 
 ## Workflow for building or reworking a scene
@@ -127,21 +168,39 @@ Before building a primitive, check these. The project standard is least-custom-c
    + a hero concept (or intentional void). Write these down before coding.
 2. **Assign bands to layers.** Decide what background (rms), mid/hero (mid), and accents
    (treble/impact) each do. Different tempos per layer.
-3. **Build the backdrop first.** Gradient sky + fog, so nothing floats on black.
-4. **Build the hero / focal field**, keeping the safe zone. Smooth its motion; big moves on beats.
-5. **Add restrained accents** — beat-triggered, pooled (reuse meshes, no per-frame allocation).
-6. **Apply cinematic post** — high-threshold bloom + grade + vignette at minimum.
-7. **Audit against the five failure modes.** If any apply, fix before declaring done.
-8. **Verify in-browser** when possible — a scene's feel can't be judged from code alone.
+3. **Set up three depth planes.** Far soft-texture base / mid single-family hero / near burst
+   accents — each on its own tempo. Keep ≤2 hard-geometry kinds on screen; fill space with noise.
+4. **Build the backdrop first.** Gradient sky + fog, so nothing floats on black.
+5. **Build the hero / focal field**, keeping the safe zone. Smooth its motion; big moves on beats.
+   Give arrays a falloff mask, size variance, and a modest count cap.
+6. **Add restrained accents** — beat-triggered, pooled (reuse meshes, no per-frame allocation).
+7. **Apply cinematic post** — high-threshold bloom + grade + vignette at minimum.
+8. **Audit against the six failure modes.** If any apply, fix before declaring done.
+9. **Verify in-browser** when possible — a scene's feel can't be judged from code alone.
+
+## Quick wins (immediate cheapness fixes)
+
+When a scene already looks cheap and you want fast, high-leverage fixes:
+- Delete half the hard geometry; fill the freed space with an fbm-noise background.
+- Add soft-blur / bloom post so sharp geometric edges stop reading as raw primitives.
+- Collapse to a single base geometry family on the subject plane.
+- Give glow only to lines/particles; turn OFF self-emissive on the main solid geometry.
+- Add a vignette to pull the eye to center and hide edge clutter.
+- Desync speeds across layers and add per-instance time offsets.
 
 ## Self-audit checklist (run before calling a scene finished)
 
 - [ ] Palette locked to 2–3 named colors; no free-running hue cycle.
 - [ ] Background is a gradient/atmosphere, not pure black; fog gives depth (3D).
+- [ ] Three separated depth planes, each on its own tempo (far slow / mid rhythm / near burst).
+- [ ] ≤2 hard-geometry kinds on screen; ~70% of the frame is soft noise/fluid/gradient texture.
+- [ ] Subject plane uses ONE geometry family; arrays have falloff mask + size variance + count cap.
+- [ ] Layer speeds are desynced; same-family instances have per-instance time offsets (no lockstep).
 - [ ] Motion is layered: slow background, mid-driven hero, beat-only accents — not uniform jitter.
 - [ ] "Follows the singing" motion is driven by `mid`, not bass or a fixed fast speed.
 - [ ] ~20% calm negative space; clear focal hierarchy; frame is anchored.
 - [ ] Hero uses a believable material, not flat emissive or bare wireframe as the subject.
+- [ ] Self-emissive is off on main solid geometry; glow/bloom reserved for lines/particles/accents.
 - [ ] Cinematic post present: high-threshold bloom + color grade + vignette.
 - [ ] Looks calm and intentional in silence; big reactions only on real beats.
 - [ ] Reused project helpers instead of hand-rolling; no per-frame allocations in the render loop.
