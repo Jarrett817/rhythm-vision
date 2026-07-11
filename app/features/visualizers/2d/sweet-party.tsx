@@ -1,4 +1,4 @@
-import { Filter, Graphics } from "pixi.js";
+import { BlurFilter, Filter, Graphics } from "pixi.js";
 import { GlowFilter } from "@pixi/filter-glow";
 import { GodrayFilter } from "@pixi/filter-godray";
 import { RGBSplitFilter } from "@pixi/filter-rgb-split";
@@ -23,28 +23,25 @@ const LAVENDER_H = 285;
 // 三档 candy hue 池，掉落元素只从中随机
 const CANDY_HUES = [ROSE_H, PEACH_H, LAVENDER_H];
 
-// 竖条固定顺序（不 hue 漂移，仅亮度呼吸）
-const STRIPE_HUES = [
-  ROSE_H,
-  PEACH_H,
-  ROSE_H,
-  LAVENDER_H,
-  PEACH_H,
-  ROSE_H,
-  PEACH_H,
-  ROSE_H,
-  PEACH_H,
+// 稀疏光柱：只有 5 根，宽窄不一、位置错开、速度错拍
+// 这不是"平铺色块"，而是舞台上的 5 束柔光——中央亮两边隐
+const PILLARS = [
+  { center: 0.14, width: 0.11, hue: ROSE_H, speed: 0.19, phase: 0.7 },
+  { center: 0.30, width: 0.07, hue: PEACH_H, speed: 0.27, phase: 2.1 },
+  { center: 0.52, width: 0.14, hue: LAVENDER_H, speed: 0.15, phase: 3.4 },
+  { center: 0.72, width: 0.08, hue: PEACH_H, speed: 0.24, phase: 4.8 },
+  { center: 0.88, width: 0.10, hue: ROSE_H, speed: 0.21, phase: 5.6 },
 ];
-const STRIPE_COUNT = STRIPE_HUES.length;
 
-type ParticleKind = "heart" | "star";
-type SpawnZone = "top" | "mid";
+// 粒子软上限：静默时更少，音乐时向上扩容，硬顶防卡顿
+const PARTICLE_SOFT_CAP = 150;
+const PARTICLE_IDLE_CAP = 40;
 
 type Particle = {
-  kind: ParticleKind;
   hue: number;
   size: number;
   body: Matter.Body;
+  seed: number;
 };
 
 function hslColor(h: number, s: number, l: number) {
@@ -79,15 +76,9 @@ function hslNumber(h: number, s: number, l: number) {
   return (r << 16) + (g << 8) + b;
 }
 
-function starOutlineVerts(outerR: number) {
-  const innerR = outerR * 0.42;
-  const verts: { x: number; y: number }[] = [];
-  for (let i = 0; i < 10; i++) {
-    const r = i % 2 === 0 ? outerR : innerR;
-    const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
-    verts.push({ x: Math.cos(a) * r, y: Math.sin(a) * r });
-  }
-  return verts;
+function hash01(n: number) {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
 }
 
 function strokeHeartOutline(
@@ -128,180 +119,178 @@ function strokeHeartOutline(
   g.stroke({ color, width, alpha, cap: "round", join: "round" });
 }
 
-function strokeStarOutline(
-  g: Graphics,
-  x: number,
-  y: number,
-  size: number,
-  color: string | number,
-  alpha: number,
-  width: number,
-  angle: number,
-) {
-  const verts = starOutlineVerts(size * 0.5);
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  const first = verts[0]!;
-  g.moveTo(
-    x + first.x * cos - first.y * sin,
-    y + first.x * sin + first.y * cos,
-  );
-  for (let i = 1; i < verts.length; i++) {
-    const v = verts[i]!;
-    g.lineTo(x + v.x * cos - v.y * sin, y + v.x * sin + v.y * cos);
-  }
-  g.closePath();
-  g.stroke({ color, width, alpha, cap: "round", join: "round" });
-}
-
-function createParticleBody(kind: ParticleKind, x: number, y: number, size: number) {
-  const opts: Matter.IBodyDefinition = {
+function createHeartBody(x: number, y: number, size: number) {
+  return Matter.Bodies.circle(x, y, size * 0.4, {
     restitution: 0.2,
     friction: 0.42,
     frictionAir: 0.012,
     density: 0.00075,
     chamfer: { radius: 1 },
-  };
-
-  if (kind === "heart") {
-    return Matter.Bodies.circle(x, y, size * 0.4, opts);
-  }
-
-  const verts = starOutlineVerts(size * 0.48);
-  return Matter.Bodies.fromVertices(x, y, [verts], opts, true);
+  });
 }
 
-function pickSpawnZone(): SpawnZone {
-  return Math.random() < 0.5 ? "top" : "mid";
-}
+function spawnHeart(width: number, height: number): Particle {
+  const size = 42 + Math.random() * 30; // 42~72，元素大而少
+  // 两侧偏心生成，中央 30~70% 留白
+  const side = Math.random() < 0.5 ? 0 : 1;
+  const nx = side === 0 ? 0.02 + Math.random() * 0.32 : 0.66 + Math.random() * 0.32;
+  const x = size + nx * Math.max(size, width - size * 2);
+  const y = -size - Math.random() * 160;
 
-function spawnParticle(
-  width: number,
-  height: number,
-  kind: ParticleKind,
-  zone = pickSpawnZone(),
-): Particle {
-  const size = 40 + Math.random() * 32; // 40~72，元素大而少
-  // 从边缘偏心生成，保留中央留白
-  const edgeBias = Math.random() < 0.5 ? Math.random() * 0.35 : 0.65 + Math.random() * 0.35;
-  const x = size + edgeBias * Math.max(size, width - size * 2);
-  const y =
-    zone === "top"
-      ? -size - Math.random() * 120
-      : height * (0.05 + Math.random() * 0.45);
+  const body = createHeartBody(x, y, size);
+  // 初速带一点朝外侧的横向分量，堆积自然偏两边
+  const outward = side === 0 ? -1 : 1;
+  Matter.Body.setVelocity(body, {
+    x: outward * (0.2 + Math.random() * 0.5),
+    y: 0.3 + Math.random() * 0.8,
+  });
+  Matter.Body.setAngularVelocity(body, (Math.random() - 0.5) * 0.06);
 
-  const body = createParticleBody(kind, x, y, size);
-  if (zone === "mid") {
-    Matter.Body.setVelocity(body, {
-      x: (Math.random() - 0.5) * 0.8,
-      y: 0.6 + Math.random() * 1.6,
-    });
-  }
-
-  // 只从三档 candy hue 中挑
   const hue = CANDY_HUES[Math.floor(Math.random() * CANDY_HUES.length)]!;
-
-  return { kind, size, hue, body };
+  return { size, hue, body, seed: Math.random() * 1000 };
 }
 
-function addParticle(
-  particles: Particle[],
-  world: Matter.World,
-  width: number,
-  height: number,
-  zone?: SpawnZone,
-) {
-  const kind: ParticleKind = Math.random() < 0.4 ? "star" : "heart";
-  const p = spawnParticle(width, height, kind, zone);
+function addHeart(particles: Particle[], world: Matter.World, width: number, height: number) {
+  const p = spawnHeart(width, height);
   particles.push(p);
   Matter.Composite.add(world, p.body);
-  Matter.Body.setAngularVelocity(p.body, (Math.random() - 0.5) * 0.08);
 }
 
 /**
- * 沉静竖条：
- * - hue 锁死 STRIPE_HUES；不随 t 循环
- * - 仅亮度与轻微横向漂移随 rms/mid 呼吸
- * - 顶部略透明，底部加暗——舞台上下留呼吸
+ * 稀疏光柱（取代"9条等宽平铺"）
+ * - 只有 5 根，宽窄各异
+ * - 每根中心亮、两边指数衰减 → 天然羽化，没有"竖条"硬边
+ * - 速度错拍：每根有自己的漂移速度和相位
+ * - 底色靠后面 aurora blobs / gradient wash 填,这里只是柔光带
  */
-function drawDynamicStripes(
+function drawSoftPillars(
   g: Graphics,
   width: number,
   height: number,
   t: number,
-  stripes: { phase: number; speed: number }[],
   mid: number,
-  bass: number,
   rms: number,
   intensity: number,
 ) {
-  const stripeW = width / STRIPE_COUNT;
-  // 缓慢漂移，速度锁上限
-  const drift = (t * (4 + mid * 6 * intensity)) % stripeW;
-
-  for (let i = -1; i <= STRIPE_COUNT; i++) {
-    const idx = ((i % STRIPE_COUNT) + STRIPE_COUNT) % STRIPE_COUNT;
-    const stripe = stripes[idx]!;
-    const hue = STRIPE_HUES[idx]!;
-
-    // 极缓的横向波，几乎不觉察，避免"晃眼"
-    const wave = Math.sin(t * 0.28 + stripe.phase) * 3 + Math.sin(t * 0.18 + i * 0.7) * 2;
-    const x = i * stripeW - drift + wave;
-
-    // 饱和度低（36-46），高级奶油质感；节拍只微推
-    const sat = 40 + Math.sin(t * 0.32 + stripe.phase) * 4 + rms * 6 * intensity;
-    // 亮度 82-90 —— 柔和粉彩，绝不打死白
-    const light =
-      84 +
-      Math.sin(t * 0.24 + stripe.phase) * 3 +
-      bass * 3 * intensity +
-      (idx === 3 ? 2 : 0); // lavender 稍亮一点做焦点
-
-    g.rect(x - 1, 0, stripeW + 3, height);
-    g.fill({
-      color: hslColor(hue, sat, light),
-      alpha: 0.86,
-    });
+  // 每根柱子沿画面竖向切成 24 段，逐段用衰减 alpha 画柔光
+  const segs = 20;
+  for (const pil of PILLARS) {
+    // 呼吸：中心位置轻微左右漂移（不同速度）
+    const drift =
+      Math.sin(t * pil.speed + pil.phase) * 0.015 +
+      Math.sin(t * pil.speed * 1.7 + pil.phase * 1.3) * 0.008;
+    const cx = (pil.center + drift * mid * 0.8) * width;
+    const halfW = pil.width * width * 0.5;
+    // 光柱纵向羽化：顶部亮、底部弱（顶光感）
+    for (let s = 0; s < segs; s++) {
+      const ny = s / (segs - 1);
+      const y = ny * height;
+      // 顶部 0.9 → 底部 0.35 的纵向衰减
+      const vertFalloff = 0.9 - Math.pow(ny, 1.4) * 0.55;
+      // 呼吸亮度：mid + 缓慢正弦
+      const breath =
+        0.55 + Math.sin(t * pil.speed * 0.9 + pil.phase + ny * 1.2) * 0.12 + mid * 0.18;
+      // 画三层同心矩形，宽度递减、alpha 递增 → 中心亮两边隐（径向衰减模拟）
+      for (let layer = 0; layer < 3; layer++) {
+        const w = halfW * (1 - layer * 0.32);
+        const alpha = (0.05 + layer * 0.06) * vertFalloff * breath * (0.7 + rms * 0.4) * intensity;
+        const sat = 32 + layer * 6;
+        const light = 82 + layer * 3 + (pil.hue === LAVENDER_H ? 2 : 0);
+        g.rect(cx - w, y, w * 2, height / segs + 1);
+        g.fill({
+          color: hslColor(pil.hue, sat, light),
+          alpha,
+        });
+      }
+    }
   }
 }
 
-/** 顶天立地的柔化层：顶部提亮 + 底部沉锚，给画面呼吸和站立感 */
-function drawAmbientOverlay(
+/**
+ * 奶油雾底：仿 pixi-atmosphere drawAuroraBlobs 手法
+ * 大柔团彼此叠加，走 rms 缓慢流动；这是画面 60%+ 面积的"程序化软纹理"
+ */
+function drawCreamMist(
   g: Graphics,
   width: number,
   height: number,
+  t: number,
   rms: number,
+  mid: number,
+  bass: number,
   intensity: number,
 ) {
-  // 顶部奶油光晕（模拟顶光）
-  const topBands = 6;
-  for (let i = 0; i < topBands; i++) {
-    const bandH = (height * 0.32) / topBands;
-    const y = i * bandH;
-    const a = (1 - i / topBands) * (0.14 + rms * 0.05 * intensity);
-    g.rect(0, y, width, bandH + 1);
-    g.fill({ color: 0xfff2f6, alpha: a });
+  const blobs = 7;
+  for (let i = 0; i < blobs; i++) {
+    // 每个团有独立相位与速度，避免同步
+    const px =
+      0.5 +
+      Math.sin(t * (0.06 + i * 0.014) + i * 1.3) * (0.34 + mid * 0.06);
+    const py =
+      0.55 +
+      Math.cos(t * (0.05 + i * 0.012) + i * 2.1) * (0.30 + bass * 0.05);
+    const cx = px * width;
+    const cy = py * height;
+    const r =
+      Math.min(width, height) *
+      (0.28 + rms * 0.10 + Math.sin(t * 0.4 + i) * 0.03) *
+      (0.9 + intensity * 0.15);
+    // 三色循环：ROSE / PEACH / LAVENDER
+    const hue = CANDY_HUES[i % 3]!;
+    // 三瓣叠加 —— 靠 BlurFilter 完成晕染
+    for (let l = 0; l < 3; l++) {
+      const a = (l / 3) * Math.PI * 2 + i;
+      const ox = Math.cos(a) * r * 0.22;
+      const oy = Math.sin(a) * r * 0.18;
+      g.ellipse(cx + ox, cy + oy, r * (0.7 + l * 0.12), r * (0.55 + l * 0.1));
+      g.fill({
+        color: hslNumber(hue, 42, 82),
+        alpha: 0.12 + mid * 0.05 + rms * 0.05,
+      });
+    }
   }
+}
 
-  // 底部暖粉阴影，形成舞台锚
-  const botBands = 8;
-  for (let i = 0; i < botBands; i++) {
-    const bandH = (height * 0.28) / botBands;
-    const y = height - (botBands - i) * bandH;
-    const a = (i / botBands) * 0.28;
-    g.rect(0, y, width, bandH + 1);
-    g.fill({ color: hslNumber(ROSE_H, 45, 32), alpha: a });
+/** 纵向渐变奶油底（gradient wash） —— 顶部提亮，底部沉锚 */
+function drawGradientBackdrop(g: Graphics, width: number, height: number, rms: number) {
+  const steps = 14;
+  for (let i = 0; i < steps; i++) {
+    const y0 = (height / steps) * i;
+    const y1 = (height / steps) * (i + 1);
+    const nt = i / (steps - 1);
+    // 顶部：奶油白偏冷；底部：暖玫瑰阴影
+    const topColor = hslNumber(LAVENDER_H, 28, 92);
+    const midColor = hslNumber(PEACH_H, 40, 88);
+    const botColor = hslNumber(ROSE_H, 38, 62);
+    const color = nt < 0.4 ? topColor : nt < 0.75 ? midColor : botColor;
+    const alpha = nt < 0.4 ? 0.5 - nt * 0.4 : 0.35 + (nt - 0.4) * 0.5;
+    g.rect(0, y0, width, y1 - y0 + 1);
+    g.fill({ color, alpha });
   }
+  // 顶部一层柔光，随 rms 轻呼吸
+  g.rect(0, 0, width, height * 0.28);
+  g.fill({ color: 0xfff2f6, alpha: 0.08 + rms * 0.05 });
+}
 
-  // 左右轻微暗角，收拢焦点
-  const vignW = width * 0.14;
-  for (let i = 0; i < 6; i++) {
-    const w = (vignW / 6) * (6 - i);
-    const a = (0.06 + i * 0.008) * 0.9;
+/** 底部堆积区暗角，锚定舞台 */
+function drawBottomAnchor(g: Graphics, width: number, height: number) {
+  const bands = 8;
+  for (let i = 0; i < bands; i++) {
+    const bandH = (height * 0.22) / bands;
+    const y = height - (bands - i) * bandH;
+    const a = (i / bands) * 0.22;
+    g.rect(0, y, width, bandH + 1);
+    g.fill({ color: hslNumber(ROSE_H, 42, 28), alpha: a });
+  }
+  // 左右轻微暗角
+  const vignW = width * 0.10;
+  for (let i = 0; i < 5; i++) {
+    const w = (vignW / 5) * (5 - i);
+    const a = (0.05 + i * 0.006) * 0.8;
     g.rect(0, 0, w, height);
-    g.fill({ color: hslNumber(ROSE_H, 40, 22), alpha: a });
+    g.fill({ color: hslNumber(ROSE_H, 40, 24), alpha: a });
     g.rect(width - w, 0, w, height);
-    g.fill({ color: hslNumber(ROSE_H, 40, 22), alpha: a });
+    g.fill({ color: hslNumber(ROSE_H, 40, 24), alpha: a });
   }
 }
 
@@ -309,16 +298,23 @@ export function SweetPartyScene(props: VisualizerProps) {
   return (
     <PixiVisualizer
       {...props}
-      bg="#f8ecef"
+      bg="#f6e8ec"
       setup={(app, featuresRef, intensityRef) => {
-        const bg = new Graphics();
-        const ambient = new Graphics();
-        const rays = new Graphics();
+        // ---- 图层顺序：奶油渐变底 → 奶油雾团 → 稀疏光柱 → 底部锚 → 心之glow → 心 ----
+        const backdrop = new Graphics();
+        const mist = new Graphics();
+        const pillars = new Graphics();
+        const anchor = new Graphics();
         const glowShapes = new Graphics();
         const shapes = new Graphics();
-        app.stage.addChild(bg, ambient, rays, glowShapes, shapes);
+        app.stage.addChild(backdrop, mist, pillars, anchor, glowShapes, shapes);
 
-        // Glow：锁定玫瑰色，不随 mid 变
+        // 奶油雾团高斯柔化 —— 转成程序化软纹理主体
+        mist.filters = [new BlurFilter({ strength: 30, quality: 3 })];
+        // 光柱轻柔化 —— 边缘再羽化一层
+        pillars.filters = [new BlurFilter({ strength: 10, quality: 2 })];
+
+        // Glow：锁定玫瑰色
         const glowFilter = new GlowFilter({
           distance: 22,
           outerStrength: 1.4,
@@ -327,16 +323,18 @@ export function SweetPartyScene(props: VisualizerProps) {
           quality: 0.2,
           alpha: 0.75,
         });
-        // 极柔和 godray，仅作为顶光扫过感
+        // 极柔和 godray 挂在稀疏光柱层上 —— 顶光扫过感
         const godrayFilter = new GodrayFilter({
           angle: 24,
-          gain: 0.14,
+          gain: 0.12,
           lacunarity: 2.2,
-          alpha: 0.22,
+          alpha: 0.18,
         });
-        // RGB split 收紧上限；只在真节拍时可见
         const rgbFilter = new RGBSplitFilter([-0.6, 0], [0, 0.4], [0.6, 0]);
-        rays.filters = [godrayFilter as unknown as Filter];
+        pillars.filters = [
+          new BlurFilter({ strength: 10, quality: 2 }) as unknown as Filter,
+          godrayFilter as unknown as Filter,
+        ];
         glowShapes.filters = [glowFilter as unknown as Filter];
         shapes.filters = [rgbFilter as unknown as Filter];
 
@@ -348,11 +346,6 @@ export function SweetPartyScene(props: VisualizerProps) {
         const particles: Particle[] = [];
         let bounds = { width: 0, height: 0, floorY: 0 };
         let walls: Matter.Body[] = [];
-
-        const stripes = Array.from({ length: STRIPE_COUNT }, () => ({
-          phase: Math.random() * Math.PI * 2,
-          speed: 0.6 + Math.random() * 0.5,
-        }));
 
         let t = 0;
         let shake = 0;
@@ -375,15 +368,9 @@ export function SweetPartyScene(props: VisualizerProps) {
         };
 
         rebuildWalls(app.renderer.width, app.renderer.height);
-        // 初始少量：约 22 个足够铺气氛，不拖开场性能
-        for (let i = 0; i < 22; i++) {
-          addParticle(
-            particles,
-            world,
-            app.renderer.width,
-            app.renderer.height,
-            i % 3 === 0 ? "mid" : "top",
-          );
+        // 开场少量，避免初始拥挤
+        for (let i = 0; i < 14; i++) {
+          addHeart(particles, world, app.renderer.width, app.renderer.height);
         }
 
         const tick = () => {
@@ -403,28 +390,32 @@ export function SweetPartyScene(props: VisualizerProps) {
           }
           shake *= 0.86;
 
-          // 掉落节流：静默时几乎不掉，音乐时也控节奏，避免密集卡顿
-          // 目标粒子数上限根据能量浮动，但不硬性 cap
+          // 动态目标粒子数：静默向 IDLE 收敛，音乐向 SOFT 扩容
           const musicOn = rms > 0.04;
-          const baseRate = musicOn
-            ? 0.09 + treble * 0.06 * intensity + rms * 0.05
-            : 0.025; // 静默时慢速持续掉落
+          const targetCap = musicOn
+            ? Math.min(
+                PARTICLE_SOFT_CAP,
+                60 + Math.floor(rms * 60 + treble * 30 * intensity),
+              )
+            : PARTICLE_IDLE_CAP;
 
-          if (Math.random() < baseRate) {
-            addParticle(particles, world, width, height);
+          // 掉落节流：静默慢速持续掉落；有音乐才加速
+          // 只有当当前 < targetCap 时才允许生成，形成动态稀疏化
+          const under = particles.length < targetCap;
+          const baseRate = musicOn
+            ? 0.09 + treble * 0.05 * intensity + rms * 0.04
+            : 0.028;
+
+          if (under && Math.random() < baseRate) {
+            addHeart(particles, world, width, height);
           }
 
-          // 只有强节拍才 burst，且量小
+          // 只有强节拍才 burst，且量小 + 也受 cap 限制
           if (musicOn && (Boolean(beat) || audio.impact > 0.4)) {
-            const burst = 1 + Math.floor(audio.impact * 2 * intensity);
-            for (let b = 0; b < burst; b++) {
-              addParticle(
-                particles,
-                world,
-                width,
-                height,
-                Math.random() < 0.5 ? "mid" : "top",
-              );
+            const burstMax = 1 + Math.floor(audio.impact * 2 * intensity);
+            for (let b = 0; b < burstMax; b++) {
+              if (particles.length >= PARTICLE_SOFT_CAP) break;
+              addHeart(particles, world, width, height);
             }
           }
 
@@ -443,14 +434,14 @@ export function SweetPartyScene(props: VisualizerProps) {
             }
           }
 
-          // 中层柔风：mid 驱动（"跟着人声"），量极小，形成飘落感
+          // 中层柔风：mid 驱动（"跟着人声"）,horizontal 微推、向两侧堆
           for (const p of particles) {
             if (p.body.isSleeping) continue;
             const side = p.body.position.x < width * 0.5 ? -1 : 1;
             Matter.Body.applyForce(p.body, p.body.position, {
               x:
-                (Math.sin(t * 0.9 + p.body.position.x * 0.008) * mid * 0.000015 +
-                  side * 0.0000155) *
+                (Math.sin(t * 0.9 + p.seed) * mid * 0.000015 +
+                  side * 0.0000175) *
                 intensity,
               y: 0,
             });
@@ -468,20 +459,39 @@ export function SweetPartyScene(props: VisualizerProps) {
             }
           }
 
-          bg.clear();
-          ambient.clear();
-          rays.clear();
+          // 硬顶保险：极端情况下移除最老的心（堆底可能会挤爆）
+          while (particles.length > PARTICLE_SOFT_CAP) {
+            const oldest = particles.shift();
+            if (oldest) Matter.Composite.remove(world, oldest.body);
+          }
+
+          backdrop.clear();
+          mist.clear();
+          pillars.clear();
+          anchor.clear();
           glowShapes.clear();
           shapes.clear();
 
-          // Godray 缓慢
-          godrayFilter.time = t * 0.14;
-          godrayFilter.gain = 0.12 + rms * 0.08 * intensity;
+          // ============================================================
+          // 【远景层 · 慢】 奶油底 + 奶油雾团 —— rms 缓慢驱动
+          // ============================================================
+          drawGradientBackdrop(backdrop, width, height, rms);
+          drawCreamMist(mist, width, height, t, rms, mid, bass, intensity);
 
-          // Glow 强度只在 treble 与 rms 上抬，颜色锁 ROSE
+          // ============================================================
+          // 【中景层 · 稀疏光柱】 —— mid 呼吸，速度错拍
+          // ============================================================
+          drawSoftPillars(pillars, width, height, t, mid, rms, intensity);
+          godrayFilter.time = t * 0.12;
+          godrayFilter.gain = 0.10 + rms * 0.06 * intensity;
+
+          drawBottomAnchor(anchor, width, height);
+
+          // ============================================================
+          // 【近景 · 焦点】 掉落心 + treble/beat glow
+          // ============================================================
           glowFilter.outerStrength = 1.05 + treble * 1.0 * intensity + rms * 0.5;
 
-          // RGB split 强阻尼；仅节拍瞬间可见
           splitTarget = musicOn
             ? 0.35 + audio.impact * 1.1 * intensity + treble * 0.35 * intensity
             : 0.2;
@@ -490,85 +500,38 @@ export function SweetPartyScene(props: VisualizerProps) {
           rgbFilter.green = [0, splitCurrent * 0.4];
           rgbFilter.blue = [splitCurrent, 0];
 
-          // Godray 作用于底层柔膜（一层近乎透明的暖片,让光斑有承载物）
-          rays.rect(0, 0, width, height);
-          rays.fill({
-            color: hslNumber(PEACH_H, 55, 88),
-            alpha: 0.1 + rms * 0.05 * intensity,
-          });
-
-          drawDynamicStripes(
-            bg,
-            width,
-            height,
-            t,
-            stripes,
-            mid,
-            bass,
-            rms,
-            intensity,
-          );
-
-          drawAmbientOverlay(ambient, width, height, rms, intensity);
-
-          // 直接按数组顺序绘制，避免每帧 [...particles].sort 的分配
           for (const p of particles) {
             const { x, y } = p.body.position;
-            // 掉出画面上方前先不画（略）；轻微幅度可见
             const sat = 42 + treble * 12 * intensity;
             const light = 62 + rms * 10 * intensity;
             const color = hslColor(p.hue, sat, light);
             const alpha = 0.82;
             const lineW = Math.max(1.3, p.size * 0.085);
 
-            // Glow 用同 hue，饱和度更强，制造"糖果发光"但不越界
             const glowColor = hslNumber(p.hue, 82, 60);
             const glowAlpha = 0.28 + treble * 0.14 * intensity + rms * 0.1;
             const glowW = lineW * 3.2;
 
-            if (p.kind === "heart") {
-              strokeHeartOutline(
-                glowShapes,
-                x,
-                y,
-                p.size,
-                glowColor,
-                glowAlpha,
-                glowW,
-                p.body.angle,
-              );
-              strokeHeartOutline(
-                shapes,
-                x,
-                y,
-                p.size,
-                color,
-                alpha,
-                lineW,
-                p.body.angle,
-              );
-            } else {
-              strokeStarOutline(
-                glowShapes,
-                x,
-                y,
-                p.size,
-                glowColor,
-                glowAlpha,
-                glowW,
-                p.body.angle,
-              );
-              strokeStarOutline(
-                shapes,
-                x,
-                y,
-                p.size,
-                color,
-                alpha,
-                lineW,
-                p.body.angle,
-              );
-            }
+            strokeHeartOutline(
+              glowShapes,
+              x,
+              y,
+              p.size,
+              glowColor,
+              glowAlpha,
+              glowW,
+              p.body.angle,
+            );
+            strokeHeartOutline(
+              shapes,
+              x,
+              y,
+              p.size,
+              color,
+              alpha,
+              lineW,
+              p.body.angle,
+            );
           }
         };
 
@@ -582,3 +545,5 @@ export function SweetPartyScene(props: VisualizerProps) {
     />
   );
 }
+// 保留 hash01 作为可扩展的随机源（未来加纸屑/花瓣等程序化纹理时可用）
+void hash01;

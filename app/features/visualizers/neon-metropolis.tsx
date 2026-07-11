@@ -1,6 +1,8 @@
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useMemo, useRef, Suspense } from "react";
 import * as THREE from "three";
+import CustomShaderMaterial from "three-custom-shader-material";
+import CSM from "three-custom-shader-material/vanilla";
 import {
   Bloom,
   BrightnessContrast,
@@ -15,6 +17,7 @@ import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
 import { AuroraSky } from "~/features/visualizers/shared/aurora-sky";
 import { useAudioResponse, SmoothValue } from "~/features/visualizers/shared/audio-response";
+import { GLSL_CLASSIC_NOISE_2D } from "~/lib/glsl/noise-chunks";
 
 // ============ 锁色霓虹夜色调色板 ============
 // 深靛蓝夜空底 + 品红/青双主霓虹 + 暖金窗灯高光
@@ -33,308 +36,331 @@ const CITY_SKY = {
   sparkle: "#f5b06a",
 } as const;
 
-// ============ 远近双层天际线（真实剪影，网格窗灯） ============
-// 每栋楼是一个 instance，几何用 boxGeometry；窗灯用单独的 instancedMesh 面片按网格贴合到楼面
-const NEAR_ROW_COUNT = 22;
-const FAR_ROW_COUNT = 30;
-const TOTAL_BUILDINGS = NEAR_ROW_COUNT + FAR_ROW_COUNT;
+// ============ 远景 shader 剪影天际线 ============
+// 用 fbm 噪波程序化生成远处城市剪影 + 雾,替代几十个box阵列,
+// 承载"70%程序化软纹理"氛围底,不抢焦点
+const skylineVertex = /* glsl */ `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+}
+`;
 
-type BuildingSpec = {
+const skylineFragment = /* glsl */ `
+${GLSL_CLASSIC_NOISE_2D}
+
+uniform float uTime;
+uniform float uRms;
+uniform float uMid;
+uniform float uTreble;
+uniform vec3 uIndigo;
+uniform vec3 uMagenta;
+uniform vec3 uCyan;
+uniform vec3 uAmber;
+
+varying vec2 vUv;
+
+// fbm 分层噪波:多个尺度叠加,像城市的天际线切片
+float fbm(vec2 p) {
+  float v = 0.0;
+  float a = 0.5;
+  for (int i = 0; i < 4; i++) {
+    v += a * cnoise(p);
+    p *= 2.05;
+    a *= 0.5;
+  }
+  return v;
+}
+
+void main() {
+  vec2 uv = vUv;
+  // 极慢横向漂移(rms 决定,4拍以上级别)
+  float drift = uTime * 0.015 + uRms * 0.05;
+
+  // 天际线高度:x 方向 fbm 生成起伏,y 用平滑阶跃切出剪影
+  // scale 变化让不同区段密度不同 -> 破均匀阵列
+  float h1 = fbm(vec2(uv.x * 4.5 + drift, 0.7)) * 0.5 + 0.5;
+  float h2 = fbm(vec2(uv.x * 9.0 - drift * 0.4, 2.3)) * 0.5 + 0.5;
+  // 组合:大山剪影 + 中细节
+  float skyline = h1 * 0.65 + h2 * 0.35;
+  // 中心略压低,给歌手负空间;边缘允许更高
+  float centerCarve = smoothstep(0.35, 0.5, abs(uv.x - 0.5));
+  skyline = mix(skyline * 0.55, skyline * 0.92, centerCarve);
+
+  // 剪影阈值:v < skyline*0.42 ~ 楼体, 上面 ~ 天空
+  float horizon = 0.14 + skyline * 0.36;
+  // 软边(不锐利,让远景像雾中剪影)
+  float building = 1.0 - smoothstep(horizon - 0.035, horizon + 0.045, uv.y);
+
+  // 楼体颜色:深靛蓝为主,底部偏品红(街面反光),顶部偏冷
+  vec3 buildingCol = mix(uIndigo * 0.55, uIndigo * 1.05, uv.y * 2.0);
+  // 稀疏窗灯:极稀,大尺度噪波做遮罩(而不是网格),暖金
+  float windowMask = fbm(vec2(uv.x * 60.0, uv.y * 90.0 - uTime * 0.02));
+  windowMask = smoothstep(0.28, 0.42, windowMask) * building;
+  // 边缘衰减(左右两端窗灯变稀)
+  float edgeFall = 1.0 - smoothstep(0.15, 0.5, abs(uv.x - 0.5));
+  windowMask *= edgeFall * 0.55;
+  // mid 呼吸(人声)
+  windowMask *= 0.55 + uMid * 0.55;
+  buildingCol += uAmber * windowMask * 1.6;
+
+  // 天空颜色:深靛蓝底 + 上方极缓品红气辉(雾+云), rms 极慢呼吸
+  float skyGlow = fbm(vec2(uv.x * 1.8 + drift * 0.3, uv.y * 2.5 - drift * 0.2));
+  vec3 skyCol = mix(uIndigo * 0.35, uMagenta * 0.28, smoothstep(0.1, 0.8, uv.y));
+  skyCol = mix(skyCol, uCyan * 0.18, smoothstep(0.55, 0.98, uv.y) * (0.35 + skyGlow * 0.4));
+  skyCol *= 0.85 + uRms * 0.25;
+
+  // 混合:剪影权重
+  vec3 col = mix(skyCol, buildingCol, building);
+
+  // 极轻雾/大气:上方更亮下方压暗
+  col *= mix(0.7, 1.05, uv.y);
+
+  // 底部雾气(靠近地平线偏暖,像光污染)
+  float horizonHaze = smoothstep(horizon + 0.08, horizon - 0.05, uv.y);
+  col += uMagenta * horizonHaze * 0.08 * (0.5 + uRms * 0.5);
+
+  // 高频微光(treble 时远处窗户略闪)
+  float twinkle = fbm(vec2(uv.x * 220.0, uv.y * 220.0 + uTime * 0.4));
+  twinkle = smoothstep(0.55, 0.62, twinkle) * building * edgeFall;
+  col += uAmber * twinkle * uTreble * 0.55;
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+function FarSilhouette({
+  featuresRef,
+}: {
+  featuresRef: React.RefObject<AudioFeatures>;
+}) {
+  const matRef = useRef<CSM<typeof THREE.MeshBasicMaterial>>(null);
+  const uniforms = useMemo(
+    () => ({
+      uTime: { value: 0 },
+      uRms: { value: 0 },
+      uMid: { value: 0 },
+      uTreble: { value: 0 },
+      uIndigo: { value: NIGHT_INDIGO.clone() },
+      uMagenta: { value: NEON_MAGENTA.clone() },
+      uCyan: { value: NEON_CYAN.clone() },
+      uAmber: { value: WINDOW_AMBER.clone() },
+    }),
+    [],
+  );
+
+  const audio = useAudioResponse(featuresRef);
+
+  useFrame((state, delta) => {
+    const mat = matRef.current;
+    if (!mat) return;
+    audio.update(delta);
+    mat.uniforms.uTime!.value = state.clock.elapsedTime;
+    mat.uniforms.uRms!.value = audio.rms;
+    mat.uniforms.uMid!.value = audio.mid;
+    mat.uniforms.uTreble!.value = audio.treble;
+  });
+
+  return (
+    <mesh position={[0, 1.2, -22]} rotation={[0, 0, 0]}>
+      <planeGeometry args={[95, 32]} />
+      <CustomShaderMaterial
+        ref={matRef}
+        baseMaterial={THREE.MeshBasicMaterial}
+        vertexShader={skylineVertex}
+        fragmentShader={skylineFragment}
+        uniforms={uniforms}
+        transparent
+        depthWrite={false}
+      />
+    </mesh>
+  );
+}
+
+// ============ 近景锚点楼(唯一硬几何族) ============
+// 只有 ~8 栋楼作为构图锚点,分居画面左右两簇,中心全空给歌手,
+// 楼体不自发光,材质金属/低粗糙,吸霓虹光反射
+type AnchorSpec = {
   x: number;
-  y: number; // 底部固定
+  y: number;
   z: number;
   width: number;
   height: number;
   depth: number;
-  isNear: boolean;
-  windowCols: number;
-  windowRows: number;
-  band: 0 | 1 | 2; // 0=bass 1=mid 2=treble 用于窗灯律动分组
   phase: number;
-  hasSpire: boolean;
+  side: -1 | 1; // 左簇 / 右簇
 };
 
-function buildSkyline(): BuildingSpec[] {
-  const buildings: BuildingSpec[] = [];
-  // 简单可复现的伪随机（避免每次 mount 变化过大）
-  let seed = 1337;
-  const rnd = () => {
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    return (seed & 0xffff) / 0xffff;
-  };
-
-  // 近层：更高更宽间距,压在画面下三分之一,中心留空让位歌手
-  const nearWidth = 26;
-  for (let i = 0; i < NEAR_ROW_COUNT; i++) {
-    const t = i / (NEAR_ROW_COUNT - 1);
-    const x = (t - 0.5) * nearWidth;
-    // 中心区(|x|<2.5)压低楼高,让出中央负空间
-    const centerCarve = Math.max(0, 1 - Math.abs(x) / 2.5);
-    const heightMax = 6.5 - centerCarve * 3.2;
-    const heightMin = 2.8;
-    const height = heightMin + rnd() * (heightMax - heightMin);
-    const width = 0.9 + rnd() * 0.6;
-    buildings.push({
-      x: x + (rnd() - 0.5) * 0.15,
-      y: -2.2,
-      z: -8.5 + (rnd() - 0.5) * 0.6,
-      width,
-      height,
-      depth: 0.9 + rnd() * 0.35,
-      isNear: true,
-      windowCols: Math.max(3, Math.floor(width * 4)),
-      windowRows: Math.max(4, Math.floor(height * 2.5)),
-      band: (i % 3) as 0 | 1 | 2,
-      phase: rnd() * Math.PI * 2,
-      hasSpire: rnd() > 0.72 && height > 4.5,
-    });
-  }
-
-  // 远层：更多楼、更矮更瘦、拉宽,做剪影地平线,中心也允许高楼
-  const farWidth = 46;
-  for (let i = 0; i < FAR_ROW_COUNT; i++) {
-    const t = i / (FAR_ROW_COUNT - 1);
-    const x = (t - 0.5) * farWidth;
-    const height = 4 + rnd() * 8;
-    const width = 0.8 + rnd() * 0.5;
-    buildings.push({
-      x: x + (rnd() - 0.5) * 0.25,
-      y: -2.3,
-      z: -14 + (rnd() - 0.5) * 1.2,
-      width,
-      height,
-      depth: 0.9 + rnd() * 0.4,
-      isNear: false,
-      windowCols: Math.max(2, Math.floor(width * 3)),
-      windowRows: Math.max(3, Math.floor(height * 1.6)),
-      band: (i % 3) as 0 | 1 | 2,
-      phase: rnd() * Math.PI * 2,
-      hasSpire: rnd() > 0.78 && height > 8,
-    });
-  }
-  return buildings;
+function buildAnchors(): AnchorSpec[] {
+  // 明确手工放置:左3右3+两栋更远的边界楼,断绝阵列感;高度/宽度差异大;不等距
+  return [
+    { x: -6.4, y: -2.2, z: -6.2, width: 1.6, height: 5.8, depth: 1.4, phase: 0.7, side: -1 },
+    { x: -8.6, y: -2.2, z: -7.0, width: 1.2, height: 4.2, depth: 1.2, phase: 1.9, side: -1 },
+    { x: -4.9, y: -2.2, z: -5.4, width: 1.0, height: 3.2, depth: 1.1, phase: 2.7, side: -1 },
+    { x: -11.2, y: -2.2, z: -8.1, width: 1.4, height: 7.1, depth: 1.5, phase: 3.4, side: -1 },
+    { x: 5.7, y: -2.2, z: -6.0, width: 1.5, height: 5.2, depth: 1.35, phase: 4.1, side: 1 },
+    { x: 8.3, y: -2.2, z: -6.9, width: 1.25, height: 4.6, depth: 1.25, phase: 5.0, side: 1 },
+    { x: 4.4, y: -2.2, z: -5.2, width: 0.95, height: 2.9, depth: 1.05, phase: 5.8, side: 1 },
+    { x: 10.8, y: -2.2, z: -8.4, width: 1.35, height: 6.5, depth: 1.45, phase: 6.4, side: 1 },
+  ];
 }
 
-function CityBuildings({
+function AnchorBuildings({
   featuresRef,
   intensity,
-  buildings,
+  anchors,
 }: {
   featuresRef: React.RefObject<AudioFeatures>;
   intensity: number;
-  buildings: BuildingSpec[];
+  anchors: AnchorSpec[];
 }) {
-  const nearRef = useRef<THREE.InstancedMesh>(null);
-  const farRef = useRef<THREE.InstancedMesh>(null);
-  const spireRef = useRef<THREE.InstancedMesh>(null);
+  const meshRef = useRef<THREE.InstancedMesh>(null);
   const audio = useAudioResponse(featuresRef);
   const dummy = useMemo(() => new THREE.Object3D(), []);
   const tmpColor = useMemo(() => new THREE.Color(), []);
 
-  const spires = useMemo(() => buildings.filter((b) => b.hasSpire), [buildings]);
-  const nearList = useMemo(() => buildings.filter((b) => b.isNear), [buildings]);
-  const farList = useMemo(() => buildings.filter((b) => !b.isNear), [buildings]);
-
   useFrame((state, delta) => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
     audio.update(delta);
     const t = state.clock.elapsedTime;
 
-    // 近层：结构随 bass 极轻微起伏（暗示鼓点), 楼体主色深靛蓝, rim 略带品红
-    const nearMesh = nearRef.current;
-    if (nearMesh) {
-      nearList.forEach((b, i) => {
-        const structuralSway = 1 + audio.bass * 0.012 * intensity;
-        const h = b.height * structuralSway;
-        dummy.position.set(b.x, b.y + h / 2, b.z);
-        dummy.scale.set(b.width, h, b.depth);
-        dummy.rotation.set(0, 0, 0);
-        dummy.updateMatrix();
-        nearMesh.setMatrixAt(i, dummy.matrix);
+    for (let i = 0; i < anchors.length; i++) {
+      const b = anchors[i]!;
+      // 每栋楼独立时间相位,不同步(防复制感)
+      const sway = 1 + audio.bass * 0.008 * intensity;
+      const h = b.height * sway;
+      dummy.position.set(b.x, b.y + h / 2, b.z);
+      dummy.scale.set(b.width, h, b.depth);
+      dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
 
-        // 楼体颜色：深靛蓝底 + 微弱品红边光,rms 呼吸,不彩虹
-        const rim = 0.05 + audio.rms * 0.08 + Math.sin(t * 0.35 + b.phase) * 0.015;
-        tmpColor.copy(NIGHT_INDIGO).lerp(NEON_MAGENTA, rim);
-        nearMesh.setColorAt(i, tmpColor);
-      });
-      nearMesh.instanceMatrix.needsUpdate = true;
-      if (nearMesh.instanceColor) nearMesh.instanceColor.needsUpdate = true;
+      // 楼体颜色:深靛蓝底 + 极微 rim(不是自发光,只是靠近光源反射感)
+      const rim = 0.04 + audio.rms * 0.06 + Math.sin(t * 0.32 + b.phase) * 0.012;
+      tmpColor.copy(NIGHT_INDIGO).lerp(b.side < 0 ? NEON_MAGENTA : NEON_CYAN, rim);
+      mesh.setColorAt(i, tmpColor);
     }
-
-    // 远层：几乎静止,只有 rms 极缓呼吸,颜色更冷更暗融入雾
-    const farMesh = farRef.current;
-    if (farMesh) {
-      farList.forEach((b, i) => {
-        dummy.position.set(b.x, b.y + b.height / 2, b.z);
-        dummy.scale.set(b.width, b.height, b.depth);
-        dummy.rotation.set(0, 0, 0);
-        dummy.updateMatrix();
-        farMesh.setMatrixAt(i, dummy.matrix);
-
-        const cool = 0.02 + audio.rms * 0.05;
-        tmpColor.copy(NIGHT_INDIGO).lerp(NEON_CYAN, cool);
-        farMesh.setColorAt(i, tmpColor);
-      });
-      farMesh.instanceMatrix.needsUpdate = true;
-      if (farMesh.instanceColor) farMesh.instanceColor.needsUpdate = true;
-    }
-
-    // 尖顶天线：treble 驱动闪烁
-    const spireMesh = spireRef.current;
-    if (spireMesh) {
-      spires.forEach((b, i) => {
-        const glow = 0.4 + Math.sin(t * 3 + b.phase) * 0.3 + audio.treble * 0.6;
-        dummy.position.set(b.x, b.y + b.height + 0.55, b.z);
-        dummy.scale.set(0.05, 1.0 + audio.treble * 0.4, 0.05);
-        dummy.rotation.set(0, 0, 0);
-        dummy.updateMatrix();
-        spireMesh.setMatrixAt(i, dummy.matrix);
-
-        tmpColor.copy(NEON_MAGENTA).multiplyScalar(glow);
-        spireMesh.setColorAt(i, tmpColor);
-      });
-      spireMesh.instanceMatrix.needsUpdate = true;
-      if (spireMesh.instanceColor) spireMesh.instanceColor.needsUpdate = true;
-    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   });
 
   return (
-    <>
-      {/* 近层楼体 */}
-      <instancedMesh ref={nearRef} args={[undefined, undefined, NEAR_ROW_COUNT]}>
-        <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial
-          color="#0a0a1f"
-          roughness={0.55}
-          metalness={0.65}
-        />
-      </instancedMesh>
-      {/* 远层楼体 */}
-      <instancedMesh ref={farRef} args={[undefined, undefined, FAR_ROW_COUNT]}>
-        <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial
-          color="#06061a"
-          roughness={0.7}
-          metalness={0.45}
-        />
-      </instancedMesh>
-      {/* 天线尖顶 */}
-      <instancedMesh ref={spireRef} args={[undefined, undefined, Math.max(1, spires.length)]}>
-        <boxGeometry args={[1, 1, 1]} />
-        <meshBasicMaterial
-          color="#ff2f8e"
-          transparent
-          opacity={0.9}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-          toneMapped={false}
-        />
-      </instancedMesh>
-    </>
+    <instancedMesh ref={meshRef} args={[undefined, undefined, anchors.length]}>
+      <boxGeometry args={[1, 1, 1]} />
+      <meshStandardMaterial
+        color="#0a0a1f"
+        roughness={0.42}
+        metalness={0.78}
+      />
+    </instancedMesh>
   );
 }
 
-// ============ 网格窗灯：instancedMesh 面片贴附在楼面上 ============
-// 每栋楼按 windowCols × windowRows 网格生成小发光面片(相对楼中心 x/y 偏移)
-// mid 驱动整体窗灯律动(人声),bass/treble 决定某些"层"是否亮起
-function WindowLights({
+// ============ 近景楼窗灯(accent 稀疏点,径向衰减遮罩) ============
+// 不是 cols×rows 网格!每栋楼上按泊松式伪随机放少量发光点,
+// 且概率沿高度/宽度带 radial 衰减(靠边缘更暗更稀),破规则复制
+function AnchorWindows({
   featuresRef,
   intensity,
-  buildings,
+  anchors,
 }: {
   featuresRef: React.RefObject<AudioFeatures>;
   intensity: number;
-  buildings: BuildingSpec[];
+  anchors: AnchorSpec[];
 }) {
   const ref = useRef<THREE.InstancedMesh>(null);
   const audio = useAudioResponse(featuresRef);
   const dummy = useMemo(() => new THREE.Object3D(), []);
   const tmpColor = useMemo(() => new THREE.Color(), []);
 
-  // 预生成每一个窗户的元数据
   const windows = useMemo(() => {
     const list: {
       x: number;
       y: number;
       z: number;
-      band: 0 | 1 | 2;
       phase: number;
-      isNear: boolean;
-      colFraction: number;
-      rowFraction: number;
+      band: 0 | 1 | 2;
+      size: number;
+      baseIntensity: number;
     }[] = [];
-    for (const b of buildings) {
-      const cols = b.windowCols;
-      const rows = b.windowRows;
+    // 每栋楼独立 seed
+    for (const b of anchors) {
+      let seed = Math.floor(b.phase * 9973) ^ 0x1a2b;
+      const rnd = () => {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        return (seed & 0xffff) / 0xffff;
+      };
+      // 目标点数 = 楼面面积 * 密度, 但用泊松式抽样
+      const area = b.width * b.height;
+      const targetCount = Math.max(6, Math.floor(area * 3.2));
       const halfW = b.width * 0.5;
-      // 只贴楼正面(靠观众一侧,z + depth/2 + tiny),边缘留一点margin
-      const faceZ = b.z + b.depth * 0.5 + 0.002;
-      // 楼顶不到顶,楼底不到底
+      const faceZ = b.z + b.depth * 0.5 + 0.005;
       const yStart = b.y + 0.35;
-      const yEnd = b.y + b.height - 0.35;
+      const yEnd = b.y + b.height - 0.4;
       const usableH = yEnd - yStart;
-      const xStart = -halfW + 0.14;
-      const xEnd = halfW - 0.14;
-      const usableW = xEnd - xStart;
-      for (let cy = 0; cy < rows; cy++) {
-        const rowFraction = rows === 1 ? 0.5 : cy / (rows - 1);
-        const wy = yStart + rowFraction * usableH;
-        for (let cx = 0; cx < cols; cx++) {
-          const colFraction = cols === 1 ? 0.5 : cx / (cols - 1);
-          const wx = b.x + xStart + colFraction * usableW;
-          // ~35% 窗户默认关闭(相位极暗),让窗灯有稀疏感而非满格
-          const on = ((cx * 3 + cy * 7 + Math.floor(b.phase * 100)) % 10) > 3;
-          if (!on) continue;
-          list.push({
-            x: wx,
-            y: wy,
-            z: faceZ,
-            band: b.band,
-            phase: b.phase + cx * 0.31 + cy * 0.17,
-            isNear: b.isNear,
-            colFraction,
-            rowFraction,
-          });
-        }
+
+      let attempts = 0;
+      let placed = 0;
+      while (placed < targetCount && attempts < targetCount * 6) {
+        attempts++;
+        const rx = rnd(); // 0..1 沿宽
+        const ry = rnd(); // 0..1 沿高
+        // 径向衰减遮罩:靠中心保留概率高,靠上下/左右边界降低
+        const dx = Math.abs(rx - 0.5) * 2; // 0..1
+        const dy = Math.abs(ry - 0.55) * 2; // 顶部略衰减更快
+        const fall = 1 - Math.min(1, Math.sqrt(dx * dx * 0.75 + dy * dy * 0.55));
+        // 只有 rnd < fall^1.3 才通过 -> 中心稠密边缘稀疏
+        if (rnd() > Math.pow(Math.max(0, fall), 1.3)) continue;
+        const wx = b.x + (rx - 0.5) * (b.width - 0.28);
+        const wy = yStart + ry * usableH;
+        list.push({
+          x: wx,
+          y: wy,
+          z: faceZ,
+          phase: b.phase + placed * 0.37 + rx * 2.1 + ry * 1.7,
+          band: (placed % 3) as 0 | 1 | 2,
+          size: 0.11 + rnd() * 0.06,
+          baseIntensity: 0.6 + rnd() * 0.55,
+        });
+        placed++;
       }
     }
     return list;
-  }, [buildings]);
+  }, [anchors]);
 
-  const totalWindows = windows.length;
+  const total = windows.length;
 
   useFrame((_, delta) => {
     const mesh = ref.current;
     if (!mesh) return;
     audio.update(delta);
     const midVocal = audio.mid;
-    const treble = audio.treble;
-    const bass = audio.bass;
     const rms = audio.rms;
+    const bass = audio.bass;
+    const treble = audio.treble;
 
-    for (let i = 0; i < totalWindows; i++) {
+    for (let i = 0; i < total; i++) {
       const w = windows[i]!;
-      // 人声(mid)驱动整体亮度波动,是主"呼吸"
-      const vocalRhythm = 0.55 + Math.sin(w.phase + midVocal * 3.5) * 0.35;
-      // 频段分组:少量窗户跟 bass/treble 抢拍
+      // 人声(mid)驱动主呼吸
+      const vocalRhythm = 0.5 + Math.sin(w.phase + midVocal * 3.2) * 0.32;
+      // 频段错拍
       const bandDrive = w.band === 0 ? bass : w.band === 1 ? midVocal : treble;
-      // 远景整体压暗,加深空气感
-      const depthDim = w.isNear ? 1.0 : 0.55;
       const brightness =
-        (0.25 + vocalRhythm * 0.35 + bandDrive * 0.6 + rms * 0.25 + audio.impact * 0.3) *
-        depthDim *
+        (0.22 + vocalRhythm * 0.32 + bandDrive * 0.55 + rms * 0.22 + audio.impact * 0.28) *
+        w.baseIntensity *
         intensity;
 
-      // 窗灯颜色:暖金主,极少数(band==2 高频)偏品红,不彩虹
-      if (w.band === 2 && treble > 0.15) {
-        tmpColor.copy(NEON_MAGENTA).lerp(WINDOW_AMBER, 0.4);
+      // 窗灯基本暖金,极少数(band==2)在高频时略偏品红
+      if (w.band === 2 && treble > 0.2) {
+        tmpColor.copy(NEON_MAGENTA).lerp(WINDOW_AMBER, 0.5);
       } else {
         tmpColor.copy(WINDOW_AMBER);
       }
       tmpColor.multiplyScalar(brightness);
 
       dummy.position.set(w.x, w.y, w.z);
-      const size = w.isNear ? 0.14 : 0.09;
-      dummy.scale.set(size, size, 1);
+      dummy.scale.set(w.size, w.size, 1);
       dummy.rotation.set(0, 0, 0);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
@@ -347,7 +373,7 @@ function WindowLights({
   return (
     <instancedMesh
       ref={ref}
-      args={[undefined, undefined, Math.max(1, totalWindows)]}
+      args={[undefined, undefined, Math.max(1, total)]}
       frustumCulled={false}
     >
       <planeGeometry args={[1, 1]} />
@@ -364,7 +390,7 @@ function WindowLights({
   );
 }
 
-// ============ 霓虹招牌：几块粗面片,锁色品红/青交替,treble 闪烁 ============
+// ============ 霓虹招牌(accent 层:少量,treble 闪) ============
 function NeonBillboards({
   featuresRef,
   intensity,
@@ -378,12 +404,10 @@ function NeonBillboards({
   const signs = useMemo(
     () =>
       [
-        { x: -9.5, y: 1.4, z: -7.8, w: 2.4, h: 0.55, color: NEON_MAGENTA, band: 0 },
-        { x: -3.8, y: 3.6, z: -8.4, w: 1.6, h: 0.4, color: NEON_CYAN, band: 2 },
-        { x: 4.2, y: 1.0, z: -7.6, w: 2.0, h: 0.5, color: NEON_MAGENTA, band: 1 },
-        { x: 8.8, y: 3.8, z: -8.2, w: 1.8, h: 0.45, color: NEON_CYAN, band: 2 },
-        { x: -11.5, y: 4.5, z: -9.1, w: 1.4, h: 0.35, color: NEON_CYAN, band: 2 },
-        { x: 11.2, y: 0.6, z: -8.0, w: 2.2, h: 0.5, color: NEON_MAGENTA, band: 0 },
+        { x: -7.6, y: 1.4, z: -5.6, w: 2.0, h: 0.5, color: NEON_MAGENTA, band: 0 },
+        { x: -4.2, y: 3.1, z: -5.9, w: 1.4, h: 0.35, color: NEON_CYAN, band: 2 },
+        { x: 6.8, y: 1.1, z: -5.5, w: 1.9, h: 0.48, color: NEON_MAGENTA, band: 1 },
+        { x: 9.4, y: 3.0, z: -6.4, w: 1.5, h: 0.38, color: NEON_CYAN, band: 2 },
       ] as const,
     [],
   );
@@ -400,14 +424,13 @@ function NeonBillboards({
       const mat = mesh.material as THREE.MeshBasicMaterial;
 
       const drive = s.band === 0 ? audio.bass : s.band === 1 ? audio.mid : audio.treble;
-      // treble 高时快速闪烁(冷色牌),bass 高时暖色牌爆闪
       const flicker =
         s.band === 2
-          ? 0.5 + Math.sin(t * 6 + i) * 0.15 + audio.treble * 0.35
-          : 0.6 + Math.sin(t * 1.6 + i) * 0.1;
-      const brightness = (flicker + drive * 0.7 + audio.impact * 0.6) * intensity;
-      mat.opacity = Math.min(1, 0.35 + brightness * 0.6);
-      mat.color.copy(s.color).multiplyScalar(0.9 + brightness * 0.8);
+          ? 0.5 + Math.sin(t * 5.5 + i) * 0.15 + audio.treble * 0.35
+          : 0.58 + Math.sin(t * 1.4 + i) * 0.1;
+      const brightness = (flicker + drive * 0.7 + audio.impact * 0.55) * intensity;
+      mat.opacity = Math.min(1, 0.32 + brightness * 0.6);
+      mat.color.copy(s.color).multiplyScalar(0.85 + brightness * 0.8);
     });
   });
 
@@ -419,7 +442,7 @@ function NeonBillboards({
           <meshBasicMaterial
             color={`#${s.color.getHexString()}`}
             transparent
-            opacity={0.6}
+            opacity={0.55}
             blending={THREE.AdditiveBlending}
             depthWrite={false}
             side={THREE.DoubleSide}
@@ -431,7 +454,7 @@ function NeonBillboards({
   );
 }
 
-// ============ 车流光轨:横向拉长的短线段,bass 加速,平稳持续存在 ============
+// ============ 车流光轨(accent 线,bass 加速) ============
 function TrafficStreaks({
   featuresRef,
   intensity,
@@ -444,7 +467,6 @@ function TrafficStreaks({
   const smoothSpeed = useRef(new SmoothValue(0.15));
 
   const lanes = useMemo(() => {
-    // 两条车道,近道品红(向左),远道青色(向右),各自若干光条
     const arr: {
       x: number;
       y: number;
@@ -459,24 +481,23 @@ function TrafficStreaks({
       seed = (seed * 1103515245 + 12345) >>> 0;
       return (seed & 0xffff) / 0xffff;
     };
-    // 近道:品红(尾灯),向左
-    for (let i = 0; i < 14; i++) {
+    // 单条近道品红(尾灯)+ 单条远道青(头灯),数量减半破均匀
+    for (let i = 0; i < 10; i++) {
       arr.push({
-        x: (rnd() - 0.5) * 22,
+        x: (rnd() - 0.5) * 20,
         y: -1.86,
-        z: -5.2,
+        z: -4.6,
         w: 0.9 + rnd() * 0.7,
         dir: -1,
         color: NEON_MAGENTA,
         baseSpeed: 3.5 + rnd() * 2,
       });
     }
-    // 远道:青(头灯),向右
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < 10; i++) {
       arr.push({
-        x: (rnd() - 0.5) * 22,
+        x: (rnd() - 0.5) * 20,
         y: -1.9,
-        z: -6.4,
+        z: -5.6,
         w: 0.75 + rnd() * 0.6,
         dir: 1,
         color: NEON_CYAN,
@@ -491,9 +512,8 @@ function TrafficStreaks({
     if (!group) return;
     audio.update(delta);
 
-    // bass 主要驱动车流速度(鼓=心跳=城市脉搏)
     const speedMult = smoothSpeed.current.update(
-      1 + audio.bass * 3.5 + audio.impact * 2,
+      1 + audio.bass * 3.2 + audio.impact * 2,
       delta,
     );
 
@@ -503,11 +523,10 @@ function TrafficStreaks({
       const mat = mesh.material as THREE.MeshBasicMaterial;
 
       mesh.position.x += lane.dir * lane.baseSpeed * speedMult * delta * intensity;
-      // 环绕
-      if (lane.dir < 0 && mesh.position.x < -13) mesh.position.x = 13 + Math.random() * 2;
-      if (lane.dir > 0 && mesh.position.x > 13) mesh.position.x = -13 - Math.random() * 2;
+      if (lane.dir < 0 && mesh.position.x < -12) mesh.position.x = 12 + Math.random() * 2;
+      if (lane.dir > 0 && mesh.position.x > 12) mesh.position.x = -12 - Math.random() * 2;
 
-      mat.opacity = Math.min(0.95, 0.55 + audio.bass * 0.35 + audio.rms * 0.15) * intensity;
+      mat.opacity = Math.min(0.9, 0.5 + audio.bass * 0.32 + audio.rms * 0.14) * intensity;
     });
   });
 
@@ -519,7 +538,7 @@ function TrafficStreaks({
           <meshBasicMaterial
             color={`#${lane.color.getHexString()}`}
             transparent
-            opacity={0.75}
+            opacity={0.72}
             blending={THREE.AdditiveBlending}
             depthWrite={false}
             toneMapped={false}
@@ -530,7 +549,7 @@ function TrafficStreaks({
   );
 }
 
-// ============ 湿街反光地面:低粗糙度金属反射,bass 打击时地面泛光 ============
+// ============ 湿街反光地面(锚定下沿) ============
 function WetStreet({
   featuresRef,
   intensity,
@@ -548,7 +567,6 @@ function WetStreet({
     if (!mat) return;
     audio.update(delta);
 
-    // 品红-青双色混合,bass 时更偏品红(暖),treble 时轻微偏青
     const warm = audio.bass * 0.6 + audio.impact * 0.4;
     const cool = audio.treble * 0.35;
     emissiveTarget.copy(WET_MAGENTA).lerp(NEON_MAGENTA, warm * 0.6);
@@ -583,7 +601,7 @@ export function NeonMetropolisScene({
   intensity,
   onCanvasReady,
 }: VisualizerProps) {
-  const buildings = useMemo(() => buildSkyline(), []);
+  const anchors = useMemo(() => buildAnchors(), []);
 
   return (
     <Canvas
@@ -591,40 +609,44 @@ export function NeonMetropolisScene({
       camera={{ position: [0, 0.4, 9.5], fov: 60 }}
       gl={{ antialias: true }}
       onCreated={({ gl, scene }) => {
-        scene.fog = new THREE.FogExp2(CITY_SKY.fog, 0.038);
+        scene.fog = new THREE.FogExp2(CITY_SKY.fog, 0.042);
         onCanvasReady?.(gl.domElement);
       }}
     >
       <Suspense fallback={null}>
-        {/* 极慢天幕:rms 呼吸,不跟拍 */}
+        {/* 远景 1: 极缓天幕(rms 呼吸) */}
         <AuroraSky featuresRef={featuresRef} theme={CITY_SKY} />
+        {/* 远景 2: 程序化剪影天际线(fbm,替代 box 阵列) */}
+        <FarSilhouette featuresRef={featuresRef} />
 
-        {/* 舞台灯光:上方冷月光 + 侧向品红 rim,不做点光源满场旋转 */}
+        {/* 舞台光:冷月光 + 侧向品红/青 rim */}
         <ambientLight intensity={0.14} color="#1a1a3a" />
         <directionalLight position={[-6, 8, 4]} intensity={0.35} color="#22d3ee" />
         <pointLight position={[8, 3, 2]} intensity={1.4} color="#ff2f8e" distance={26} />
         <pointLight position={[-8, 2, 2]} intensity={1.0} color="#22d3ee" distance={26} />
 
-        {/* 天际线主体 */}
-        <CityBuildings
+        {/* 近景锚点楼(唯一硬几何族) */}
+        <AnchorBuildings
           featuresRef={featuresRef}
           intensity={intensity}
-          buildings={buildings}
+          anchors={anchors}
         />
-        <WindowLights
+        {/* 稀疏窗灯(accent 点,径向衰减非网格) */}
+        <AnchorWindows
           featuresRef={featuresRef}
           intensity={intensity}
-          buildings={buildings}
+          anchors={anchors}
         />
+        {/* 招牌 & 车流 & 湿街(accent 层,不算硬几何) */}
         <NeonBillboards featuresRef={featuresRef} intensity={intensity} />
         <TrafficStreaks featuresRef={featuresRef} intensity={intensity} />
         <WetStreet featuresRef={featuresRef} intensity={intensity} />
 
-        {/* 电影级后期:高阈值 bloom + 色彩分级 + 边缘暗角 + 微噪点 */}
+        {/* 电影级后期 */}
         <EffectComposer multisampling={2}>
           <Bloom
             intensity={1.5 + intensity * 1.1}
-            luminanceThreshold={0.32}
+            luminanceThreshold={0.34}
             luminanceSmoothing={0.88}
             mipmapBlur
           />
@@ -634,7 +656,6 @@ export function NeonMetropolisScene({
             radialModulation
             modulationOffset={0.45}
           />
-          {/* 偏冷夜色调,略压对比 */}
           <HueSaturation hue={-0.02} saturation={0.14} />
           <BrightnessContrast brightness={-0.04} contrast={0.16} />
           <Noise opacity={0.03} blendFunction={BlendFunction.OVERLAY} />

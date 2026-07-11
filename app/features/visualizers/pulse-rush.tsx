@@ -12,6 +12,8 @@ import {
   Vignette,
 } from "@react-three/postprocessing";
 import { BlendFunction } from "postprocessing";
+import CustomShaderMaterial from "three-custom-shader-material";
+import CSM from "three-custom-shader-material/vanilla";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
 import { AuroraSky } from "~/features/visualizers/shared/aurora-sky";
@@ -20,8 +22,9 @@ import { ThreeVisualizerShell } from "~/features/visualizers/shared/three-visual
 import { SceneSpringEntry } from "~/features/visualizers/shared/scene-spring-entry";
 import { SceneEnvironment } from "~/features/visualizers/shared/scene-environment";
 import { useAudioResponse, SmoothValue } from "~/features/visualizers/shared/audio-response";
+import { GLSL_CLASSIC_NOISE_3D } from "~/lib/glsl/noise-chunks";
 
-// 深紫震金：锁定 2-3 色，不做彩虹转色
+// 锁色：深紫震金（禁彩虹）
 const DEEP_VIOLET = new THREE.Color("#2a0a4a");
 const AMBER = new THREE.Color("#f5a623");
 const MAGENTA = new THREE.Color("#7c1f6e");
@@ -35,94 +38,107 @@ const PULSE_SKY = {
   sparkle: "#e9c46a",
 } as const;
 
-// ================= 节奏脉冲环 =================
-function RhythmPulseRings({
+// ================= 远景体积噪波流体（软纹理基底，占大面积） =================
+// 用 fbm(cnoise3d) 作程序化流体雾，是"70%软纹理"的主要承担者。
+// 只受 rms 驱动、极慢时间流（time * ~0.08），与中景粒子/近景冲击波完全解耦。
+const volumeVertex = /* glsl */ `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+}
+`;
+
+const volumeFragment = /* glsl */ `
+${GLSL_CLASSIC_NOISE_3D}
+
+uniform float uTime;
+uniform float uEnergy;
+uniform vec3 uColorLow;
+uniform vec3 uColorMid;
+uniform vec3 uColorHigh;
+
+varying vec2 vUv;
+
+// 三段 fbm 体积雾
+float fbm(vec3 p) {
+  float f = 0.0;
+  float amp = 0.5;
+  for (int i = 0; i < 4; i++) {
+    f += amp * cnoise(p);
+    p *= 2.02;
+    amp *= 0.5;
+  }
+  return f;
+}
+
+void main() {
+  vec2 uv = vUv - 0.5;
+  // 极慢流场，与其他层完全解耦
+  float t = uTime * 0.08;
+  vec3 p = vec3(uv * 2.4, t);
+  float n = fbm(p);
+  float n2 = fbm(p * 1.7 + vec3(3.1, -1.2, t * 0.6));
+  // 混合两层 fbm 造出"体积翻卷"感
+  float dense = smoothstep(-0.6, 0.9, n * 0.6 + n2 * 0.4);
+  // 径向 falloff：把能量往中偏下集中，边缘融入暗背景（不做全屏铺满）
+  float radial = smoothstep(0.95, 0.15, length(uv * vec2(1.0, 1.35)));
+  float mask = dense * radial;
+
+  // 三段渐变：暗紫 → 品红 → 琥珀高光（能量高时高光带才浮现）
+  vec3 col = mix(uColorLow, uColorMid, mask);
+  col = mix(col, uColorHigh, pow(mask, 3.0) * (0.15 + uEnergy * 0.6));
+
+  // 整体偏暗：作为背景层不能抢注意力
+  float alpha = mask * (0.55 + uEnergy * 0.35);
+  gl_FragColor = vec4(col, alpha);
+}
+`;
+
+function VolumetricHazeField({
   featuresRef,
-  intensity,
 }: {
   featuresRef: React.RefObject<AudioFeatures>;
-  intensity: number;
 }) {
-  const groupRef = useRef<THREE.Group>(null);
-  const audio = useAudioResponse(featuresRef);
-  const count = 16;
-
-  const smoothScales = useRef(
-    Array.from({ length: count }, () => new SmoothValue(0.15)),
-  );
-
-  useFrame((state, delta) => {
-    const group = groupRef.current;
-    if (!group) return;
-
-    audio.update(delta);
-    const t = state.clock.elapsedTime;
-
-    // 扩散节奏跟人声语调（mid）走，整体更沉稳
-    const baseSpeed = (0.55 + audio.mid * 3 + audio.rms * 0.8) * intensity;
-
-    group.children.forEach((child, i) => {
-      const mesh = child as THREE.Mesh;
-      const mat = mesh.material as THREE.MeshBasicMaterial;
-
-      // 分层频段响应
-      const ringBand = Math.floor(i / 4) % 3; // 0-3=bass, 4-7=mid, 8-11=treble, 12-15=rms
-      let drive = 0;
-      if (ringBand === 0) drive = audio.bass;
-      else if (ringBand === 1) drive = audio.mid;
-      else if (ringBand === 2) drive = audio.treble;
-      else drive = audio.rms;
-
-      // 相位和半径
-      const phase = t * baseSpeed + i * 0.4;
-      const baseRadius = 1.2 + i * 0.6;
-      const pulseAmount = (0.5 + Math.sin(phase) * 0.4) + drive * 1.2;
-      const targetRadius = baseRadius * (1 + pulseAmount * intensity);
-
-      // 平滑缩放
-      mesh.scale.setScalar(smoothScales.current[i]!.update(targetRadius, delta));
-      mesh.rotation.z = phase * 0.3;
-
-      // 颜色：深紫底，随频段能量向琥珀金偏移（锁色不彩虹）
-      const warm = Math.min(1, drive * 0.8 + audio.impact * 0.6);
-      const hue = 0.78 - warm * 0.68; // 0.78≈紫 → 0.1≈金
-      const lightness = 0.42 + drive * 0.28;
-      mat.color.setHSL(hue, 0.85, lightness);
-
-      // 透明度：bass 冲击时爆发
-      const flicker = 0.1 + Math.sin(phase * 2) * 0.1;
-      mat.opacity = (0.15 + flicker + audio.impact * 0.6) * intensity;
-    });
-
-    // 整体倾斜
-    group.rotation.z = t * 0.25 * baseSpeed;
-    group.rotation.x = Math.sin(t * 0.3) * 0.2 + audio.mid * 0.3;
-  });
-
-  const rings = useMemo(
-    () =>
-      Array.from({ length: count }, (_, i) => {
-        const thickness = 0.015 + (i % 4) * 0.005;
-        return (
-          <mesh key={i}>
-            <torusGeometry args={[1, thickness, 10, 96 + i * 8]} />
-            <meshBasicMaterial
-              color="#00ffff"
-              transparent
-              opacity={0.35}
-              blending={THREE.AdditiveBlending}
-              depthWrite={false}
-            />
-          </mesh>
-        );
-      }),
+  const matRef = useRef<CSM<typeof THREE.MeshBasicMaterial>>(null);
+  const smoothEnergy = useRef(new SmoothValue(0.04));
+  const uniforms = useMemo(
+    () => ({
+      uTime: { value: 0 },
+      uEnergy: { value: 0 },
+      uColorLow: { value: DEEP_VIOLET.clone().multiplyScalar(0.55) },
+      uColorMid: { value: MAGENTA.clone() },
+      uColorHigh: { value: AMBER.clone() },
+    }),
     [],
   );
 
-  return <group ref={groupRef}>{rings}</group>;
+  useFrame((state, delta) => {
+    const mat = matRef.current;
+    if (!mat) return;
+    const f = featuresRef.current;
+    mat.uniforms.uTime!.value = state.clock.elapsedTime;
+    mat.uniforms.uEnergy!.value = smoothEnergy.current.update(f.rms, delta);
+  });
+
+  // 放在天幕(-35)和相机之间的中远景，占大面积但不遮挡近景冲击波
+  return (
+    <mesh position={[0, 0, -18]} rotation={[0, 0, 0]}>
+      <planeGeometry args={[68, 40]} />
+      <CustomShaderMaterial
+        ref={matRef}
+        baseMaterial={THREE.MeshBasicMaterial}
+        vertexShader={volumeVertex}
+        fragmentShader={volumeFragment}
+        uniforms={uniforms}
+        transparent
+        depthWrite={false}
+        blending={THREE.NormalBlending}
+      />
+    </mesh>
+  );
 }
 
-// ================= 节奏隧道 =================
+// ================= 中景：节奏粒子隧道（唯一硬几何族，rhythm layer） =================
 function RhythmWarpTunnel({
   featuresRef,
   intensity,
@@ -132,29 +148,28 @@ function RhythmWarpTunnel({
 }) {
   const ref = useRef<THREE.Points>(null);
   const audio = useAudioResponse(featuresRef);
-  const count = 2000;
+  const count = 1400;
 
   const data = useMemo(() => {
     const positions = new Float32Array(count * 3);
-    const colors = new Float32Array(count * 3);
     const speeds = new Float32Array(count);
     const bands = new Uint8Array(count);
+    const phases = new Float32Array(count);
 
     for (let i = 0; i < count; i++) {
       const angle = Math.random() * Math.PI * 2;
+      // 每粒子基础半径 + 随机大小方差（避免复制感）
       const r = 2 + Math.random() * 20;
       positions[i * 3] = Math.cos(angle) * r;
       positions[i * 3 + 1] = (Math.random() - 0.5) * 22;
-      positions[i * 3 + 2] = Math.sin(angle) * r;
-
-      colors[i * 3] = 0.3;
-      colors[i * 3 + 1] = 0.8;
-      colors[i * 3 + 2] = 0.9;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 36;
 
       speeds[i] = 0.3 + Math.random() * 0.7;
       bands[i] = Math.floor(Math.random() * 3);
+      // 每粒子独立时间相位（同族但不锁步）
+      phases[i] = Math.random() * Math.PI * 2;
     }
-    return { positions, colors, speeds, bands };
+    return { positions, speeds, bands, phases };
   }, []);
 
   const positionsRef = useRef(data.positions);
@@ -167,22 +182,21 @@ function RhythmWarpTunnel({
     audio.update(delta);
     const { mid, rms, bass, treble } = featuresRef.current;
 
-    // 隧道推进跟人声语调（mid）走，降低整体速度
-    const baseSpeed = (1.2 + mid * 7 + rms * 1.5) * intensity * delta;
+    // 隧道推进跟 mid（人声/旋律）走，静默时依然缓慢漂流
+    const baseSpeed = (1.1 + mid * 6.5 + rms * 1.2) * intensity * delta;
     const arr = positionsRef.current;
 
     for (let i = 0; i < count; i++) {
       // 不同粒子带响应不同速度
       const bandMult = data.bands[i] === 0
-        ? 1 + bass * 1.5
+        ? 1 + bass * 1.4
         : data.bands[i] === 1
           ? 1 + mid * 0.8
-          : 1 + treble * 2;
+          : 1 + treble * 1.8;
 
       const z = arr[i * 3 + 2]! + baseSpeed * data.speeds[i]! * bandMult;
       if (z > 18) {
         arr[i * 3 + 2] = -18;
-        // 重生时重新随机位置
         const angle = Math.random() * Math.PI * 2;
         const r = 2 + Math.random() * 20;
         arr[i * 3] = Math.cos(angle) * r;
@@ -193,19 +207,19 @@ function RhythmWarpTunnel({
     }
     points.geometry.attributes.position!.needsUpdate = true;
 
-    // 旋转随人声语调（mid）柔和推进
-    points.rotation.y += delta * (0.15 + mid * 1.4);
-    points.rotation.x = Math.sin(state.clock.elapsedTime * 0.2) * 0.2;
+    // 旋转：mid 驱动柔和推进
+    points.rotation.y += delta * (0.15 + mid * 1.3);
+    points.rotation.x = Math.sin(state.clock.elapsedTime * 0.2) * 0.18;
 
     const mat = points.material as THREE.PointsMaterial;
-    // 大小随 rms 爆发
-    mat.size = (0.05 + rms * 0.2 + audio.impact * 0.1) * intensity;
+    mat.size = (0.06 + rms * 0.22 + audio.impact * 0.12) * intensity;
 
-    // 颜色脉冲：紫→金，锁色
+    // 锁色脉冲：MAGENTA → AMBER（不做彩虹）
     const warm = Math.min(1, treble * 0.7 + audio.impact * 0.6);
-    const hue = 0.78 - warm * 0.68;
-    colorRef.current.setHSL(hue, 0.8, 0.55 + rms * 0.2);
-    mat.color.copy(colorRef.current);
+    colorRef.current.copy(MAGENTA).lerp(AMBER, warm);
+    // 中层再拉一点亮度随 rms
+    mat.color.copy(colorRef.current).multiplyScalar(0.85 + rms * 0.35);
+    mat.opacity = 0.7 + rms * 0.25;
   });
 
   return (
@@ -214,7 +228,6 @@ function RhythmWarpTunnel({
         <bufferAttribute attach="attributes-position" args={[data.positions, 3]} />
       </bufferGeometry>
       <pointsMaterial
-        color="#67e8f9"
         size={0.08}
         transparent
         opacity={0.75}
@@ -226,7 +239,8 @@ function RhythmWarpTunnel({
   );
 }
 
-// ================= Bass 冲击波 =================
+// ================= 近景：drop 瞬时冲击波（beat-only accent，平时隐藏） =================
+// 只在 isBeatDrop 时才 spawn，寿命短(~0.25s)，池化复用，不做持续层。
 function BassShockwaves({
   featuresRef,
   intensity,
@@ -236,16 +250,17 @@ function BassShockwaves({
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const audio = useAudioResponse(featuresRef);
-  const maxWaves = 10;
-  const waves = useRef<{ life: number; dir: THREE.Vector3; speed: number }[]>([]);
+  const maxWaves = 4;
+  const waves = useRef<{ life: number; speed: number; tilt: number }[]>([]);
+  const spawnCooldown = useRef(0);
 
   const pool = useMemo(() => {
-    const geo = new THREE.TorusGeometry(1, 0.02, 8, 64);
+    const geo = new THREE.TorusGeometry(1, 0.025, 8, 96);
     return Array.from({ length: maxWaves }, () => {
       const mesh = new THREE.Mesh(
         geo,
         new THREE.MeshBasicMaterial({
-          color: "#00ffff",
+          color: AMBER.clone(),
           transparent: true,
           opacity: 0,
           blending: THREE.AdditiveBlending,
@@ -274,25 +289,21 @@ function BassShockwaves({
     if (!groupRef.current) return;
 
     audio.update(delta);
+    spawnCooldown.current -= delta;
 
-    // Bass 冲击时产生新的冲击波
-    if (audio.isBeatDrop && waves.current.length < maxWaves) {
-      const angle1 = Math.random() * Math.PI * 2;
-      const angle2 = Math.random() * Math.PI * 2;
+    // 仅节拍冲击时 spawn，冷却避免连爆
+    if (audio.isBeatDrop && spawnCooldown.current <= 0 && waves.current.length < maxWaves) {
       waves.current.push({
         life: 1,
-        dir: new THREE.Vector3(
-          Math.cos(angle1) * Math.sin(angle2),
-          Math.cos(angle2),
-          Math.sin(angle1) * Math.sin(angle2),
-        ),
-        speed: 2 + audio.impact * 3,
+        speed: 4 + audio.impact * 2, // life 消耗速度快 → ~0.2s 消失
+        tilt: (Math.random() - 0.5) * 0.6,
       });
+      spawnCooldown.current = 0.12;
     }
 
-    // 更新波
+    // 更新剩余寿命
     waves.current = waves.current.filter((w) => {
-      w.life -= delta * w.speed * 0.15;
+      w.life -= delta * w.speed;
       return w.life > 0;
     });
 
@@ -301,12 +312,16 @@ function BassShockwaves({
       const w = waves.current[i];
       if (w) {
         mesh.visible = true;
-        const size = (1 - w.life) * 12 * intensity;
-        mesh.scale.set(size, size, size);
-        mesh.lookAt(w.dir);
+        // 快速外扩
+        const size = (1 - w.life) * 14 * intensity;
+        mesh.scale.set(size, size, size * 0.15); // 压扁成"冲击环"而非球壳
+        mesh.rotation.x = Math.PI / 2 + w.tilt;
+        mesh.rotation.z = w.tilt * 1.5;
         const mat = mesh.material as THREE.MeshBasicMaterial;
-        mat.opacity = w.life * 0.5;
-        mat.color.setHSL(0.78 - (1 - w.life) * 0.6, 0.85, 0.6);
+        // 快速衰减：外扩时越来越透明
+        mat.opacity = Math.pow(w.life, 0.6) * 0.75;
+        // 颜色：品红→琥珀金锁色
+        mat.color.copy(MAGENTA).lerp(AMBER, 1 - w.life);
       } else {
         mesh.visible = false;
       }
@@ -314,92 +329,6 @@ function BassShockwaves({
   });
 
   return <group ref={groupRef} />;
-}
-
-// ================= 中心能量核心（旋转水晶多面体） =================
-function EnergyCore({
-  featuresRef,
-  intensity,
-}: {
-  featuresRef: React.RefObject<AudioFeatures>;
-  intensity: number;
-}) {
-  const groupRef = useRef<THREE.Group>(null);
-  const crystalRef = useRef<THREE.Mesh>(null);
-  const facetRef = useRef<THREE.Mesh>(null);
-  const audio = useAudioResponse(featuresRef);
-  const smoothScale = useRef(new SmoothValue(0.1));
-  const smoothEmissive = useRef(new SmoothValue(0.1));
-  const emissiveTarget = useRef(new THREE.Color());
-
-  useFrame((state, delta) => {
-    const group = groupRef.current;
-    const crystal = crystalRef.current;
-    const facet = facetRef.current;
-    if (!group || !crystal || !facet) return;
-
-    audio.update(delta);
-    const t = state.clock.elapsedTime;
-
-    // 缓慢匀速呼吸，不随 bass 收缩式跳动（避免"心脏感"）
-    const targetScale = (1 + audio.rms * 0.22 + audio.impact * 0.28) * intensity;
-    group.scale.setScalar(smoothScale.current.update(targetScale, delta));
-
-    // 稳定的水晶旋转：慢、匀速，只轻微受 mid 影响
-    group.rotation.y = t * 0.18 + audio.mid * 0.15;
-    group.rotation.x = t * 0.08;
-    // 内层棱角与外层反向转，制造折射闪烁
-    facet.rotation.y = -t * 0.26;
-    facet.rotation.z = t * 0.12;
-
-    // 深紫 → 琥珀金（锁色）
-    const warm = Math.min(1, audio.treble * 0.6 + audio.impact * 0.7);
-    emissiveTarget.current.copy(MAGENTA).lerp(AMBER, warm);
-    const mat = crystal.material as THREE.MeshPhysicalMaterial;
-    mat.emissive.lerp(emissiveTarget.current, 0.06);
-    mat.emissiveIntensity = smoothEmissive.current.update(
-      0.3 + audio.rms * 1.4 + audio.impact * 1.6,
-      delta,
-    );
-
-    const facetMat = facet.material as THREE.MeshBasicMaterial;
-    facetMat.opacity = 0.12 + audio.treble * 0.3;
-  });
-
-  return (
-    <group ref={groupRef}>
-      {/* 水晶主体：玻璃质 + 环境反射的多面体宝石 */}
-      <mesh ref={crystalRef}>
-        <icosahedronGeometry args={[1.15, 0]} />
-        <meshPhysicalMaterial
-          color={DEEP_VIOLET}
-          emissive={MAGENTA}
-          emissiveIntensity={0.4}
-          roughness={0.08}
-          metalness={0.35}
-          clearcoat={1}
-          clearcoatRoughness={0.12}
-          reflectivity={1}
-          transmission={0.35}
-          ior={1.7}
-          thickness={1.4}
-          flatShading
-        />
-      </mesh>
-      {/* 内层棱角骨架：折射闪烁 */}
-      <mesh ref={facetRef}>
-        <octahedronGeometry args={[0.78, 0]} />
-        <meshBasicMaterial
-          color={AMBER}
-          wireframe
-          transparent
-          opacity={0.16}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-        />
-      </mesh>
-    </group>
-  );
 }
 
 // ================= 主场景 =================
@@ -422,17 +351,24 @@ export function PulseRushScene({
       <SceneSpringEntry>
       <Suspense fallback={null}>
         <SceneEnvironment variant="studio" intensity={0.5} />
+        {/* 远景 A：天幕渐变噪波（time*0.08 by shader，rms 驱动） */}
         <AuroraSky featuresRef={featuresRef} theme={PULSE_SKY} />
+        {/* 远景 B：体积雾 fbm 流体（软纹理主承担者，占 70% 画面） */}
+        <VolumetricHazeField featuresRef={featuresRef} />
+
         <ambientLight intensity={0.18} color="#3a1a5a" />
         <pointLight position={[3, 2, 4]} intensity={2.6} color="#f5a623" distance={30} />
         <pointLight position={[-4, -1, 2]} intensity={1.8} color="#7c1f6e" distance={28} />
 
-        <SceneSparkles featuresRef={featuresRef} color="#e9c46a" count={400} />
+        {/* 软点缀（非硬几何） */}
+        <SceneSparkles featuresRef={featuresRef} color="#e9c46a" count={300} />
         <FlowRibbons featuresRef={featuresRef} intensity={intensity} baseHue={285} />
+
+        {/* 中景：唯一硬几何族 = 粒子隧道（mid 驱动节奏） */}
         <RhythmWarpTunnel featuresRef={featuresRef} intensity={intensity} />
-        <RhythmPulseRings featuresRef={featuresRef} intensity={intensity} />
+
+        {/* 近景：drop 瞬时爆发（beat-only，平时隐藏） */}
         <BassShockwaves featuresRef={featuresRef} intensity={intensity} />
-        <EnergyCore featuresRef={featuresRef} intensity={intensity} />
 
         <EffectComposer multisampling={2}>
           <DepthOfField
@@ -442,7 +378,7 @@ export function PulseRushScene({
           />
           <Bloom
             intensity={1.6 + intensity * 1.2}
-            luminanceThreshold={0.28}
+            luminanceThreshold={0.35}
             luminanceSmoothing={0.9}
             mipmapBlur
           />

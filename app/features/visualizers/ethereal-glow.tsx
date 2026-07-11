@@ -236,8 +236,9 @@ function CalmCoreOrb({
     emissiveTarget.copy(AURORA_VIOLET).lerp(AURORA_TEAL, warm);
     const mat = shell.material as THREE.MeshPhysicalMaterial;
     mat.emissive.lerp(emissiveTarget, 0.04);
+    // 主体几何几乎不自发光，辉光交给外层柔光壳/极光幕布/星尘
     mat.emissiveIntensity = smoothEmissive.current.update(
-      0.55 + audio.rms * 0.9 + audio.impact * 1.0,
+      0.12 + audio.rms * 0.28 + audio.impact * 0.4,
       delta,
     );
 
