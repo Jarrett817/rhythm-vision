@@ -10,6 +10,8 @@ import type { AudioFeatures } from "~/lib/audio/types";
  * 分层音频响应器
  * 将音频的不同频段映射到不同的视觉行为
  */
+export type SongSection = "intro" | "verse" | "buildup" | "drop" | "breakdown";
+
 export class AudioLayeredResponse {
   private featuresRef: React.RefObject<AudioFeatures>;
 
@@ -28,6 +30,17 @@ export class AudioLayeredResponse {
   private bassImpact = 0;
   private lastBass = 0;
 
+  // 歌曲结构追踪
+  private energyHistory: number[] = [];
+  private readonly historyMaxLen = 180; // 约3秒@60fps
+  private longTermEnergy = 0;
+  private shortTermEnergy = 0;
+  private energyTrend = 0; // 正=上升, 负=下降
+  private sectionState: SongSection = "intro";
+  private sectionBlend = 0; // 在段落内的渐进 0→1
+  private timeInSection = 0;
+  private lastDropTime = -999;
+
   constructor(featuresRef: React.RefObject<AudioFeatures>) {
     this.featuresRef = featuresRef;
   }
@@ -36,13 +49,17 @@ export class AudioLayeredResponse {
     const f = this.featuresRef.current;
 
     // 平滑滤波（不同频率用不同的平滑系数）
-    this.smoothBass += (f.bass - this.smoothBass) * Math.min(1, delta * 8);
-    this.smoothMid += (f.mid - this.smoothMid) * Math.min(1, delta * 12);
-    this.smoothTreble += (f.treble - this.smoothTreble) * Math.min(1, delta * 20);
-    this.smoothRms += (f.rms - this.smoothRms) * Math.min(1, delta * 6);
+    const bassSmoothing = Math.min(1, delta * 8);
+    const midSmoothing = Math.min(1, delta * 12);
+    const trebleSmoothing = Math.min(1, delta * 20);
+    const rmsSmoothing = Math.min(1, delta * 6);
+    this.smoothBass += (f.bass - this.smoothBass) * bassSmoothing;
+    this.smoothMid += (f.mid - this.smoothMid) * midSmoothing;
+    this.smoothTreble += (f.treble - this.smoothTreble) * trebleSmoothing;
+    this.smoothRms += (f.rms - this.smoothRms) * rmsSmoothing;
 
     // 变化率
-    this.bassDelta = (this.smoothBass - this.lastBass) / delta;
+    this.bassDelta = delta > 0 ? (this.smoothBass - this.lastBass) / delta : 0;
     this.lastBass = this.smoothBass;
 
     // Bass 冲击（突然增强时）
@@ -51,6 +68,57 @@ export class AudioLayeredResponse {
     } else {
       this.bassImpact *= Math.max(0, 1 - delta * 3);
     }
+
+    // 歌曲结构追踪
+    const instantEnergy = this.smoothBass * 0.5 + this.smoothMid * 0.3 + this.smoothRms * 0.2;
+    this.shortTermEnergy += (instantEnergy - this.shortTermEnergy) * Math.min(1, delta * 2);
+    this.longTermEnergy += (instantEnergy - this.longTermEnergy) * Math.min(1, delta * 0.15);
+    this.energyTrend += (this.shortTermEnergy - this.longTermEnergy - this.energyTrend) * Math.min(1, delta * 1.5);
+
+    this.energyHistory.push(instantEnergy);
+    if (this.energyHistory.length > this.historyMaxLen) this.energyHistory.shift();
+
+    this.timeInSection += delta;
+
+    // 段落状态机
+    const t = performance.now() / 1000;
+    const rising = this.energyTrend > 0.05;
+    const falling = this.energyTrend < -0.05;
+    const highEnergy = this.shortTermEnergy > 0.5;
+    const lowEnergy = this.shortTermEnergy < 0.2;
+    const veryHigh = this.shortTermEnergy > 0.7;
+    const justDropped = this.bassImpact > 0.6 && this.timeInSection > 0.5;
+
+    if (justDropped && (this.sectionState === "buildup" || highEnergy)) {
+      this.sectionState = "drop";
+      this.sectionBlend = 0;
+      this.timeInSection = 0;
+      this.lastDropTime = t;
+    } else if (rising && !highEnergy && this.sectionState !== "buildup" && this.sectionState !== "drop") {
+      this.sectionState = "buildup";
+      this.sectionBlend = 0;
+      this.timeInSection = 0;
+    } else if (falling && highEnergy && this.sectionState === "drop" && this.timeInSection > 4) {
+      this.sectionState = "breakdown";
+      this.sectionBlend = 0;
+      this.timeInSection = 0;
+    } else if (lowEnergy && this.sectionState === "breakdown" && this.timeInSection > 3) {
+      this.sectionState = "intro";
+      this.sectionBlend = 0;
+      this.timeInSection = 0;
+    } else if (!lowEnergy && !highEnergy && this.sectionState === "intro" && this.timeInSection > 2) {
+      this.sectionState = "verse";
+      this.sectionBlend = 0;
+      this.timeInSection = 0;
+    } else if (this.sectionState === "verse" && highEnergy) {
+      this.sectionState = "drop";
+      this.sectionBlend = 0;
+      this.timeInSection = 0;
+    }
+
+    // 段落内渐进 blend
+    const blendSpeed = this.sectionState === "drop" ? 2.5 : 0.6;
+    this.sectionBlend = Math.min(1, this.sectionBlend + delta * blendSpeed);
   }
 
   // ============= 基础数值 =============
@@ -83,6 +151,64 @@ export class AudioLayeredResponse {
 
   get isBeatDrop() {
     return this.bassImpact > 0.3;
+  }
+
+  // ============= 歌曲段落检测 =============
+  /** 当前歌曲段落 */
+  get section(): SongSection {
+    return this.sectionState;
+  }
+
+  /** 段落内进度 0→1（刚进入段落时为0，完全进入后为1） */
+  get sectionProgress() {
+    return this.sectionBlend;
+  }
+
+  /** 长期平均能量（用于对比是否在build-up） */
+  get longEnergy() {
+    return this.longTermEnergy;
+  }
+
+  /** 短期瞬时能量 */
+  get shortEnergy() {
+    return this.shortTermEnergy;
+  }
+
+  /** 能量趋势：正=上升(build-up)，负=下降(breakdown)，0=稳定 */
+  get energyTrendValue() {
+    return this.energyTrend;
+  }
+
+  /** 从0到1的"紧张度"：build-up期间持续上升，drop瞬间爆发到1后回落 */
+  get tension() {
+    if (this.sectionState === "buildup") {
+      return Math.min(1, this.sectionBlend * 0.7 + Math.max(0, this.energyTrend) * 3);
+    }
+    if (this.sectionState === "drop") {
+      // drop瞬间tension=1，随后在段落中维持0.7-0.9
+      return 0.7 + 0.3 * Math.exp(-this.timeInSection * 1.5);
+    }
+    if (this.sectionState === "breakdown") {
+      return 0.3 * (1 - this.sectionBlend);
+    }
+    if (this.sectionState === "intro") {
+      return 0.1;
+    }
+    return 0.4; // verse
+  }
+
+  /** 场景"释放度"：drop期间高，breakdown/intro期间低 */
+  get release() {
+    if (this.sectionState === "drop") {
+      return 0.6 + 0.4 * this.sectionBlend;
+    }
+    if (this.sectionState === "verse") {
+      return 0.3 + 0.2 * this.sectionBlend;
+    }
+    if (this.sectionState === "buildup") {
+      return 0.15 + 0.1 * this.sectionBlend;
+    }
+    return 0.1;
   }
 
   // ============= 视觉映射函数 =============

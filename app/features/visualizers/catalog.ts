@@ -7,6 +7,7 @@ export type VisualizerId =
   | "ink-mist"
   | "ethereal-glow"
   | "neon-metropolis"
+  | "festival-stage"
   | "sweet-party";
 
 export type VisualizerCategory = "abstract" | "landscape";
@@ -73,6 +74,15 @@ export const VISUALIZER_META: VisualizerMeta[] = [
     imagery: "雨夜天际线，窗灯与湿街霓虹",
     audioMap: "低频楼影 · 中频窗灯 · 高频招牌",
     description: "3D 都市夜景",
+  },
+  {
+    id: "festival-stage",
+    name: "星光舞台",
+    dimension: "3d",
+    category: "landscape",
+    imagery: "星空纱幕，柔光追光，水晶光核，花瓣飘落",
+    audioMap: "低频光核呼吸 · 中频光柱摇摆 · 高频星尘闪烁",
+    description: "演唱会舞台感，柔光灯柱与花瓣飘落",
   },
   {
     id: "sweet-party",

@@ -1,4 +1,4 @@
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, Suspense } from "react";
 import * as THREE from "three";
 import {
@@ -90,7 +90,7 @@ void main() {
 
   // 整体偏暗：作为背景层不能抢注意力
   float alpha = mask * (0.55 + uEnergy * 0.35);
-  gl_FragColor = vec4(col, alpha);
+  csm_FragColor = vec4(col, alpha);
 }
 `;
 
@@ -239,6 +239,44 @@ function RhythmWarpTunnel({
   );
 }
 
+// ================= 场景段落演化器：build-up推近，drop拉远+震动，breakdown柔化 =================
+function PulseSceneEvolver({
+  featuresRef,
+}: {
+  featuresRef: React.RefObject<AudioFeatures>;
+}) {
+  const { camera } = useThree();
+  const audio = useAudioResponse(featuresRef);
+  const baseZ = 9;
+  const baseFov = 65;
+
+  useFrame((_, delta) => {
+    audio.update(delta);
+    const tension = audio.tension;
+    const release = audio.release;
+    const impact = audio.impact;
+    const t = performance.now() / 1000;
+
+    // build-up期间相机推近制造紧张，drop瞬间拉远释放
+    const targetZ = baseZ - tension * 1.8 + release * 1.2 + impact * 0.5;
+    const targetFov = baseFov + impact * 12 + release * 4;
+    const shakeX = impact * (Math.random() - 0.5) * 0.25;
+    const shakeY = impact * (Math.random() - 0.5) * 0.18;
+
+    camera.position.z += (targetZ - camera.position.z) * Math.min(1, delta * 4);
+    camera.position.y += (Math.sin(t * 0.5) * 0.1 * (1 - release * 0.3) - camera.position.y) * Math.min(1, delta * 2);
+    camera.position.x += (shakeX - camera.position.x * 0.2) * Math.min(1, delta * 10);
+    camera.position.y += shakeY * Math.min(1, delta * 10);
+
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.fov += (targetFov - camera.fov) * Math.min(1, delta * 5);
+      camera.updateProjectionMatrix();
+    }
+  });
+
+  return null;
+}
+
 // ================= 近景：drop 瞬时冲击波（beat-only accent，平时隐藏） =================
 // 只在 isBeatDrop 时才 spawn，寿命短(~0.25s)，池化复用，不做持续层。
 function BassShockwaves({
@@ -369,6 +407,9 @@ export function PulseRushScene({
 
         {/* 近景：drop 瞬时爆发（beat-only，平时隐藏） */}
         <BassShockwaves featuresRef={featuresRef} intensity={intensity} />
+
+        {/* 歌曲段落驱动：相机随intro/buildup/drop/breakdown演化 */}
+        <PulseSceneEvolver featuresRef={featuresRef} />
 
         <EffectComposer multisampling={2}>
           <DepthOfField

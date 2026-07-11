@@ -1,23 +1,14 @@
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Sparkles } from "@react-three/drei";
 import { useEffect, useMemo, useRef, Suspense } from "react";
 import * as THREE from "three";
-import {
-  Bloom,
-  BrightnessContrast,
-  DepthOfField,
-  EffectComposer,
-  HueSaturation,
-  Noise,
-  Vignette,
-} from "@react-three/postprocessing";
-import { BlendFunction } from "postprocessing";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
 import { ThreeVisualizerShell } from "~/features/visualizers/shared/three-visualizer-shell";
 import { SceneSpringEntry } from "~/features/visualizers/shared/scene-spring-entry";
 import { SceneEnvironment } from "~/features/visualizers/shared/scene-environment";
 import { GradientBackdrop } from "~/features/visualizers/shared/gradient-backdrop";
+import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postprocessing";
 import {
   useAudioResponse,
   SmoothValue,
@@ -399,6 +390,46 @@ function BeatShockPool({
   return <group ref={groupRef} />;
 }
 
+// ================= 场景段落演化器 =================
+function EtherealSceneEvolver({
+  featuresRef,
+}: {
+  featuresRef: React.RefObject<AudioFeatures>;
+}) {
+  const { camera } = useThree();
+  const audio = useAudioResponse(featuresRef);
+  const baseZ = 9.5;
+  const baseY = 0.4;
+  const baseFov = 55;
+
+  useFrame((_, delta) => {
+    audio.update(delta);
+    const tension = audio.tension;
+    const release = audio.release;
+    const impact = audio.impact;
+    const t = performance.now() / 1000;
+
+    // build-up推近制造紧张，drop拉远释放
+    const targetZ = baseZ - tension * 2 + release * 1 + impact * 0.4;
+    const targetY = baseY + Math.sin(t * 0.35) * 0.15 * (1 - release * 0.4);
+    const targetFov = baseFov + impact * 10 + release * 3;
+    const shakeX = impact * (Math.random() - 0.5) * 0.2;
+    const shakeY = impact * (Math.random() - 0.5) * 0.15;
+
+    camera.position.z += (targetZ - camera.position.z) * Math.min(1, delta * 3);
+    camera.position.y += (targetY - camera.position.y) * Math.min(1, delta * 2);
+    camera.position.x += (shakeX - camera.position.x * 0.3) * Math.min(1, delta * 8);
+    camera.position.y += shakeY * Math.min(1, delta * 8);
+
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.fov += (targetFov - camera.fov) * Math.min(1, delta * 4);
+      camera.updateProjectionMatrix();
+    }
+  });
+
+  return null;
+}
+
 // ================= 主场景 =================
 export function EtherealGlowScene({
   featuresRef,
@@ -492,28 +523,11 @@ export function EtherealGlowScene({
             {/* 节拍爆发环 */}
             <BeatShockPool featuresRef={featuresRef} intensity={intensity} />
 
+            {/* 歌曲段落驱动相机演化 */}
+            <EtherealSceneEvolver featuresRef={featuresRef} />
+
             {/* 电影级后期 */}
-            <EffectComposer multisampling={2}>
-              <DepthOfField
-                focusDistance={0.014}
-                focalLength={0.05}
-                bokehScale={2.2}
-              />
-              <Bloom
-                intensity={1.3 + intensity * 0.9}
-                luminanceThreshold={0.22}
-                luminanceSmoothing={0.9}
-                mipmapBlur
-              />
-              {/* 冷调 + 略降饱和的电影感 */}
-              <HueSaturation hue={0.03} saturation={0.08} />
-              <BrightnessContrast brightness={-0.03} contrast={0.14} />
-              <Noise
-                opacity={0.03}
-                blendFunction={BlendFunction.OVERLAY}
-              />
-              <Vignette eskil={false} offset={0.3} darkness={0.7} />
-            </EffectComposer>
+            <DreamyPostProcessing intensity={intensity} />
           </Suspense>
         </SceneSpringEntry>
       </Canvas>

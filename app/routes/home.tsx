@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect } from "react";
 import type { Route } from "./+types/home";
-import { Settings, Maximize2, Minimize2, Loader2, Circle, Mic, Music } from "lucide-react";
+import { Settings, Maximize2, Minimize2, Loader2, Circle, Mic, Music, Zap } from "lucide-react";
 import { useAudioEngine } from "~/features/audio/use-audio-engine";
 import { useLiveTranscription } from "~/features/lyrics/use-live-transcription";
 import { useRecorder } from "~/features/export/use-recorder";
@@ -98,8 +98,12 @@ export default function Home() {
   const [showTopBar, setShowTopBar] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [autoSwitchEnabled, setAutoSwitchEnabled] = useState(false);
+  const [transitionFlash, setTransitionFlash] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const flashRef = useRef(0);
+  const flashOpacityRef = useRef(0);
 
   const visualizer = getVisualizer(visualizerId)!;
   const filteredVisualizers = getVisualizersByCategory(visualizerCategory);
@@ -144,6 +148,73 @@ export default function Home() {
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
     };
   }, []);
+
+  // 自动场景切换功能（智能段落感知）
+  useEffect(() => {
+    if (!autoSwitchEnabled) return;
+
+    let lastSwitchTime = 0;
+    let interval: number | null = null;
+    let prevBass = 0;
+    let sceneTime = 0;
+    const MIN_SCENE_TIME = 6000; // 每个场景至少停留6秒
+
+    const triggerSwitch = () => {
+      const now = Date.now();
+      if (now - lastSwitchTime < MIN_SCENE_TIME) return;
+      const list = filteredVisualizers;
+      const idx = list.findIndex((v) => v.id === visualizerId);
+      if (idx < 0) return;
+      // 随机选择下一个场景（不重复当前）
+      let nextIdx = (idx + 1 + Math.floor(Math.random() * (list.length - 1))) % list.length;
+      const next = list[nextIdx];
+      if (next) {
+        // 触发全屏闪白
+        flashRef.current = 1;
+        setVisualizerId(next.id);
+        lastSwitchTime = now;
+        sceneTime = 0;
+      }
+    };
+
+    const tick = () => {
+      const now = Date.now();
+      const dt = 500; // tick interval ms
+      sceneTime += dt;
+
+      // 闪白衰减动画
+      flashOpacityRef.current = flashRef.current;
+      flashRef.current *= Math.pow(0.001, dt / 1000);
+      if (Math.abs(flashRef.current - transitionFlash) > 0.01) {
+        setTransitionFlash(flashRef.current);
+      }
+
+      // 检查是否有音乐
+      const hasMusic = features.rms > 0.08;
+      if (!hasMusic) return;
+
+      // Bass 冲击检测（beat drop）
+      const bassDelta = Math.max(0, features.bass - prevBass);
+      prevBass = features.bass;
+
+      // 智能切换触发条件：
+      // 1. 强bass冲击且场景已经播放超过MIN_SCENE_TIME → 在drop瞬间切换
+      // 2. 场景已经播放超过15秒（保底切换）
+      const strongDrop = bassDelta > 0.3 && features.bass > 0.5;
+      const timeUp = now - lastSwitchTime > 15000;
+
+      if ((strongDrop && sceneTime > MIN_SCENE_TIME) || timeUp) {
+        triggerSwitch();
+      }
+    };
+
+    // 初始化
+    lastSwitchTime = Date.now();
+    interval = window.setInterval(tick, 80);
+    return () => {
+      if (interval !== null) clearInterval(interval);
+    };
+  }, [autoSwitchEnabled, visualizerId, filteredVisualizers, features.rms, features.bass, setVisualizerId, transitionFlash]);
 
   // 默认现场收音：浏览器要求 getUserMedia 必须由用户手势触发，
   // 因此在首次任意交互时自动尝试开麦（仅当仍处于 mic 模式且未加载文件）
@@ -363,6 +434,23 @@ export default function Home() {
                   <Separator />
 
                   <div className="space-y-3">
+                    <Label className="text-sm font-medium">VJ 自动切换场景</Label>
+                    <Button
+                      variant={autoSwitchEnabled ? "default" : "outline"}
+                      onClick={() => setAutoSwitchEnabled(!autoSwitchEnabled)}
+                      className="w-full gap-2"
+                    >
+                      <Zap className="size-4" />
+                      {autoSwitchEnabled ? "自动切换已开启" : "开启自动切换"}
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      播放音乐时将每隔 10 秒自动切换视觉效果
+                    </p>
+                  </div>
+
+                  <Separator />
+
+                  <div className="space-y-3">
                     <Label className="text-sm font-medium">
                       氛围强度: {intensity.toFixed(1)}
                     </Label>
@@ -407,6 +495,17 @@ export default function Home() {
           }}
         />
       </VisualizerSceneHost>
+
+      {/* 全屏闪白转场层 */}
+      {transitionFlash > 0.01 && (
+        <motion.div
+          className="fixed inset-0 z-[100] pointer-events-none"
+          style={{
+            background: "white",
+            opacity: transitionFlash * 0.15,
+          }}
+        />
+      )}
 
       <VisualizerEdgeNav
         visualizers={filteredVisualizers}

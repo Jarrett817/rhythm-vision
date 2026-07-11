@@ -1,21 +1,12 @@
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useMemo, useRef, Suspense } from "react";
 import * as THREE from "three";
 import CustomShaderMaterial from "three-custom-shader-material";
 import CSM from "three-custom-shader-material/vanilla";
-import {
-  Bloom,
-  BrightnessContrast,
-  ChromaticAberration,
-  EffectComposer,
-  HueSaturation,
-  Noise,
-  Vignette,
-} from "@react-three/postprocessing";
-import { BlendFunction } from "postprocessing";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
 import { AuroraSky } from "~/features/visualizers/shared/aurora-sky";
+import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postprocessing";
 import { useAudioResponse, SmoothValue } from "~/features/visualizers/shared/audio-response";
 import { GLSL_CLASSIC_NOISE_2D } from "~/lib/glsl/noise-chunks";
 
@@ -125,7 +116,7 @@ void main() {
   twinkle = smoothstep(0.55, 0.62, twinkle) * building * edgeFall;
   col += uAmber * twinkle * uTreble * 0.55;
 
-  gl_FragColor = vec4(col, 1.0);
+  csm_FragColor = vec4(col, 1.0);
 }
 `;
 
@@ -234,7 +225,7 @@ void main() {
   buildingCol += vec3(1.0, 0.75, 0.42) * wmask * 1.5;
 
   float alpha = building;
-  gl_FragColor = vec4(buildingCol, alpha);
+  csm_FragColor = vec4(buildingCol, alpha);
 }
 `;
 
@@ -338,7 +329,7 @@ void main() {
   vec3 col = rainTint * rain + mix(vec3(0.02, 0.04, 0.08), uMagenta * 0.08, uv.y) * mist;
 
   float alpha = clamp(rain * 1.2 + mist * 0.6, 0.0, 0.85);
-  gl_FragColor = vec4(col, alpha);
+  csm_FragColor = vec4(col, alpha);
 }
 `;
 
@@ -449,7 +440,7 @@ void main() {
 
   vec3 col = beamCol * beams * 0.55 + hazeCol * haze;
   float alpha = clamp(beams * 0.42 + haze * 0.5, 0.0, 0.75);
-  gl_FragColor = vec4(col, alpha);
+  csm_FragColor = vec4(col, alpha);
 }
 `;
 
@@ -765,7 +756,7 @@ void main() {
 
   vec3 col = uColor * (0.7 + uBrightness * 0.9) * shine;
   float alpha = clamp(shine * (0.4 + uBrightness * 0.5), 0.0, 1.0);
-  gl_FragColor = vec4(col, alpha);
+  csm_FragColor = vec4(col, alpha);
 }
 `;
 
@@ -1067,7 +1058,7 @@ void main() {
   smear *= 0.4 + centerFall * 0.9;
 
   float alpha = clamp(smear * 0.7 + wetGlow * 0.6, 0.0, 0.75);
-  gl_FragColor = vec4(smearCol, alpha);
+  csm_FragColor = vec4(smearCol, alpha);
 }
 `;
 
@@ -1116,6 +1107,102 @@ function WetReflections({
       />
     </mesh>
   );
+}
+
+// ============ Bass冲击全屏闪白 ============
+function BassFlash({
+  featuresRef,
+}: {
+  featuresRef: React.RefObject<AudioFeatures>;
+}) {
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
+  const flashRef = useRef(0);
+  const audio = useAudioResponse(featuresRef);
+  const prevBass = useRef(0);
+
+  useFrame((_, delta) => {
+    audio.update(delta);
+    const bassNow = audio.bass;
+    const bassDelta = Math.max(0, bassNow - prevBass.current);
+    prevBass.current = bassNow;
+    // 只在 bass 突然升高时触发闪白（beat drop）
+    if (bassDelta > 0.25 + (1 - audio.rms) * 0.1) {
+      flashRef.current = Math.min(1, bassDelta * 1.8);
+    }
+    flashRef.current *= Math.pow(0.02, delta);
+    if (matRef.current) {
+      matRef.current.opacity = flashRef.current * 0.12;
+    }
+  });
+
+  return (
+    <mesh position={[0, 0, -0.5]} renderOrder={999}>
+      <planeGeometry args={[100, 100]} />
+      <meshBasicMaterial
+        ref={matRef}
+        color="#ffffff"
+        transparent
+        opacity={0}
+        depthTest={false}
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+        toneMapped={false}
+      />
+    </mesh>
+  );
+}
+
+// ============ 场景全局演化器（随歌曲段落驱动相机/雾/灯光）============
+function SceneEvolver({
+  featuresRef,
+}: {
+  featuresRef: React.RefObject<AudioFeatures>;
+}) {
+  const { camera, scene } = useThree();
+  const audio = useAudioResponse(featuresRef);
+  const fogColor = useMemo(() => new THREE.Color(CITY_SKY.fog), []);
+  const baseFogDensity = 0.042;
+  const baseCamY = 0.4;
+  const baseCamZ = 9.5;
+  const baseFov = 60;
+
+  useFrame((_, delta) => {
+    audio.update(delta);
+    const tension = audio.tension;
+    const release = audio.release;
+    const impact = audio.impact;
+    const t = performance.now() / 1000;
+
+    // 雾浓度：intro浓（神秘），buildup逐渐散开，drop最清，breakdown重新浓密
+    const fogTarget = baseFogDensity * (1.6 - release * 0.7 - tension * 0.2);
+    if (scene.fog instanceof THREE.FogExp2) {
+      scene.fog.density += (fogTarget - scene.fog.density) * Math.min(1, delta * 2);
+      // drop瞬间雾色稍微偏亮
+      const brightLift = impact * 0.5 + release * 0.1;
+      scene.fog.color.copy(fogColor).lerp(
+        new THREE.Color("#1a0f3a"),
+        brightLift,
+      );
+    }
+
+    // 相机：build-up期间微微推近（紧张），drop瞬间拉后+震动（释放冲击），breakdown缓慢拉远
+    const targetZ = baseCamZ - tension * 1.2 + release * 0.8 + impact * 0.3;
+    const targetY = baseCamY + Math.sin(t * 0.4) * 0.05 * (1 - release * 0.5);
+    const targetFov = baseFov + impact * 8 + release * 3;
+    const shakeX = impact * (Math.random() - 0.5) * 0.15;
+    const shakeY = impact * (Math.random() - 0.5) * 0.1;
+
+    camera.position.z += (targetZ - camera.position.z) * Math.min(1, delta * 3);
+    camera.position.y += (targetY - camera.position.y) * Math.min(1, delta * 2);
+    camera.position.x += (shakeX - camera.position.x * 0.3) * Math.min(1, delta * 8);
+    camera.position.y += shakeY * Math.min(1, delta * 8);
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.fov += (targetFov - camera.fov) * Math.min(1, delta * 4);
+      camera.updateProjectionMatrix();
+    }
+  });
+
+  return null;
 }
 
 // ============ 主场景 ============
@@ -1177,25 +1264,14 @@ export function NeonMetropolisScene({
         {/* 雨夜氛围(最前的斜向雨丝 + 雨雾,软 shader 层) */}
         <RainVeil featuresRef={featuresRef} />
 
-        {/* 电影级后期 */}
-        <EffectComposer multisampling={2}>
-          <Bloom
-            intensity={1.5 + intensity * 1.1}
-            luminanceThreshold={0.34}
-            luminanceSmoothing={0.88}
-            mipmapBlur
-          />
-          <ChromaticAberration
-            blendFunction={BlendFunction.NORMAL}
-            offset={[0.0005, 0.0005]}
-            radialModulation
-            modulationOffset={0.45}
-          />
-          <HueSaturation hue={-0.02} saturation={0.14} />
-          <BrightnessContrast brightness={-0.04} contrast={0.16} />
-          <Noise opacity={0.03} blendFunction={BlendFunction.OVERLAY} />
-          <Vignette eskil={false} offset={0.26} darkness={0.78} />
-        </EffectComposer>
+        {/* Bass drop 冲击闪白 */}
+        <BassFlash featuresRef={featuresRef} />
+
+        {/* 歌曲段落驱动：相机/雾/全局演化 */}
+        <SceneEvolver featuresRef={featuresRef} />
+
+        {/* 梦幻电影级后期统一使用DreamyPostProcessing */}
+        <DreamyPostProcessing intensity={intensity} />
       </Suspense>
     </Canvas>
   );
