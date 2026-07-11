@@ -1,10 +1,19 @@
 import { Canvas, useFrame } from "@react-three/fiber";
-import { MeshDistortMaterial, Sphere } from "@react-three/drei";
+import { Sparkles } from "@react-three/drei";
 import { useEffect, useMemo, useRef, Suspense } from "react";
 import * as THREE from "three";
+import {
+  Bloom,
+  BrightnessContrast,
+  DepthOfField,
+  EffectComposer,
+  HueSaturation,
+  Noise,
+  Vignette,
+} from "@react-three/postprocessing";
+import { BlendFunction } from "postprocessing";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
-import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postprocessing";
 import { ThreeVisualizerShell } from "~/features/visualizers/shared/three-visualizer-shell";
 import { SceneSpringEntry } from "~/features/visualizers/shared/scene-spring-entry";
 import { SceneEnvironment } from "~/features/visualizers/shared/scene-environment";
@@ -14,8 +23,181 @@ import {
   SmoothValue,
 } from "~/features/visualizers/shared/audio-response";
 
-// ================= 音乐极光环 =================
-function MusicalAuroraRings({
+// ================= 锁定配色（紫蓝极光） =================
+// 深靛蓝紫底 + 极光青绿 + 冷紫 + 冷白高光。禁止彩虹转色，只在锁色之间插值。
+const INDIGO_DEEP = new THREE.Color("#0a0725");
+const AURORA_TEAL = new THREE.Color("#3ee3c2");
+const AURORA_VIOLET = new THREE.Color("#8a6bff");
+const COOL_WHITE = new THREE.Color("#dff5ff");
+
+// 天幕分层色（配合 GradientBackdrop）
+const SKY_TOP = "#050318";
+const SKY_HORIZON = "#1a1550";
+const SKY_BOTTOM = "#0a0725";
+
+// ================= 极光幕布（Hero 层） =================
+// 用大平面 + ShaderMaterial 做半透明大块面极光带，取代过去的细 torus 环。
+// 跟随 mid（人声）缓慢起伏，treble 驱动上缘蒸发亮度。
+const auroraVertexShader = /* glsl */ `
+  varying vec2 vUv;
+  varying vec3 vPos;
+  void main() {
+    vUv = uv;
+    vPos = position;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const auroraFragmentShader = /* glsl */ `
+  precision highp float;
+  varying vec2 vUv;
+  varying vec3 vPos;
+
+  uniform float uTime;
+  uniform float uMid;
+  uniform float uTreble;
+  uniform float uRms;
+  uniform float uIntensity;
+  uniform vec3 uColorA; // teal
+  uniform vec3 uColorB; // violet
+  uniform vec3 uColorHi; // cool white
+  uniform float uSeed;
+
+  // 简单 2D value noise（无外部纹理，适合极光带的柔和纵向波动）
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  }
+  float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+  float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+      v += a * noise(p);
+      p *= 2.03;
+      a *= 0.5;
+    }
+    return v;
+  }
+
+  void main() {
+    // 纵向柔和衰减（顶部微亮的蒸发，底部彻底透明消失）
+    float verticalFade = smoothstep(0.02, 0.35, vUv.y) * smoothstep(1.02, 0.55, vUv.y);
+
+    // 水平波动：极慢的横向漂移，跟 mid（人声）呼吸
+    float slowT = uTime * 0.06 + uSeed * 6.283;
+    float breath = uMid * 0.35 + uRms * 0.15;
+    float wave = fbm(vec2(vUv.x * 2.3 + slowT, vUv.y * 1.4 + slowT * 0.4 + uSeed));
+    wave = mix(wave, wave * (1.0 + breath * 1.6), 0.65);
+
+    // 垂直方向的丝带感（噪声轮廓 + 边缘羽化）
+    float ribbon = smoothstep(0.35, 0.75, wave);
+    // 上边缘更亮的高光带（treble 驱动的蒸发感）
+    float topGlow = smoothstep(0.55, 0.98, vUv.y) * (0.35 + uTreble * 0.9);
+
+    // 颜色：teal → violet 之间的锁色渐变，不做彩虹
+    float mixK = 0.35 + wave * 0.5 + uMid * 0.2;
+    vec3 col = mix(uColorA, uColorB, clamp(mixK, 0.0, 1.0));
+    // 顶部亮边掺一点冷白高光
+    col = mix(col, uColorHi, topGlow * 0.55);
+
+    // 强度：主要靠 ribbon + verticalFade，rms 提亮
+    float alpha = ribbon * verticalFade * (0.55 + uRms * 0.4) * uIntensity;
+    alpha += topGlow * verticalFade * 0.35 * uIntensity;
+
+    // 边缘水平衰减，避免硬边
+    float edgeH = smoothstep(0.0, 0.18, vUv.x) * smoothstep(1.0, 0.82, vUv.x);
+    alpha *= edgeH;
+
+    if (alpha < 0.001) discard;
+    gl_FragColor = vec4(col * (1.2 + uTreble * 0.6), alpha);
+  }
+`;
+
+function AuroraCurtain({
+  featuresRef,
+  intensity,
+  seed,
+  position,
+  rotation,
+  scale,
+}: {
+  featuresRef: React.RefObject<AudioFeatures>;
+  intensity: number;
+  seed: number;
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+}) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const audio = useAudioResponse(featuresRef);
+
+  const uniforms = useMemo(
+    () => ({
+      uTime: { value: 0 },
+      uMid: { value: 0 },
+      uTreble: { value: 0 },
+      uRms: { value: 0 },
+      uIntensity: { value: intensity },
+      uColorA: { value: AURORA_TEAL.clone() },
+      uColorB: { value: AURORA_VIOLET.clone() },
+      uColorHi: { value: COOL_WHITE.clone() },
+      uSeed: { value: seed },
+    }),
+    // seed 是常量，intensity 会通过 useFrame 更新
+    [seed],
+  );
+
+  const smoothMid = useRef(new SmoothValue(0.05));
+  const smoothTreble = useRef(new SmoothValue(0.08));
+  const smoothRms = useRef(new SmoothValue(0.03));
+
+  useFrame((state, delta) => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    audio.update(delta);
+
+    uniforms.uTime.value = state.clock.elapsedTime;
+    uniforms.uMid.value = smoothMid.current.update(audio.mid, delta);
+    uniforms.uTreble.value = smoothTreble.current.update(audio.treble, delta);
+    uniforms.uRms.value = smoothRms.current.update(audio.rms, delta);
+    uniforms.uIntensity.value = intensity;
+
+    // 幕布极慢横向漂移，只跟 rms 微幅摆动
+    const t = state.clock.elapsedTime;
+    mesh.position.x = position[0] + Math.sin(t * 0.05 + seed * 3.1) * 0.35;
+    mesh.rotation.z =
+      rotation[2] + Math.sin(t * 0.04 + seed * 2.4) * 0.03 + audio.mid * 0.02;
+  });
+
+  return (
+    <mesh ref={meshRef} position={position} rotation={rotation} scale={scale}>
+      <planeGeometry args={[6, 12, 1, 1]} />
+      <shaderMaterial
+        transparent
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+        vertexShader={auroraVertexShader}
+        fragmentShader={auroraFragmentShader}
+        uniforms={uniforms}
+        side={THREE.DoubleSide}
+        toneMapped={false}
+      />
+    </mesh>
+  );
+}
+
+// ================= 沉静光核 =================
+// 磨砂半透明球 + 内层薄壳的柔光。缓慢呼吸，绝不快速形变。
+function CalmCoreOrb({
   featuresRef,
   intensity,
 }: {
@@ -23,227 +205,129 @@ function MusicalAuroraRings({
   intensity: number;
 }) {
   const groupRef = useRef<THREE.Group>(null);
+  const shellRef = useRef<THREE.Mesh>(null);
+  const haloRef = useRef<THREE.Mesh>(null);
   const audio = useAudioResponse(featuresRef);
-  const ringCount = 8;
 
-  // 每个环的相位偏移
-  const phases = useMemo(
-    () => Array.from({ length: ringCount }, (_, i) => i * Math.PI / ringCount),
-    [],
-  );
-
-  const smoothSizes = useRef(
-    Array.from({ length: ringCount }, () => new SmoothValue(0.1)),
-  );
+  const smoothScale = useRef(new SmoothValue(0.04));
+  const smoothEmissive = useRef(new SmoothValue(0.05));
+  const emissiveTarget = useMemo(() => new THREE.Color(), []);
 
   useFrame((state, delta) => {
     const group = groupRef.current;
-    if (!group) return;
+    const shell = shellRef.current;
+    const halo = haloRef.current;
+    if (!group || !shell || !halo) return;
 
     audio.update(delta);
     const t = state.clock.elapsedTime;
 
-    // 整体旋转随 bass 加速
-    group.rotation.x = Math.sin(t * 0.15) * 0.3 + audio.bass * 0.2;
-    group.rotation.z = t * 0.06 + audio.mid * 0.3;
+    // 极慢呼吸：主要跟 rms 走，冲击时轻微鼓一下
+    const target =
+      (1 + audio.rms * 0.12 + audio.impact * 0.18) * intensity;
+    group.scale.setScalar(smoothScale.current.update(target, delta));
 
-    // 每个环有独立的音乐响应
-    group.children.forEach((child, i) => {
-      const mesh = child as THREE.Mesh;
-      const mat = mesh.material as THREE.MeshBasicMaterial;
+    // 极慢旋转，不追频段
+    group.rotation.y = t * 0.05;
+    group.rotation.x = Math.sin(t * 0.07) * 0.1;
 
-      // 不同的环响应不同的频段：内层 bass，外层 treble
-      const ringWeight = i / ringCount;
-      const freqAmount = ringWeight < 0.4
-        ? audio.bass * (1 - ringWeight * 2) // 内层 bass 驱动
-        : ringWeight > 0.7
-          ? audio.treble * (ringWeight - 0.7) * 3 // 外层 treble 驱动
-          : audio.mid; // 中间 mid 驱动
+    // 颜色：紫 → 青，锁色（mid 驱动偏移）
+    const warm = Math.min(1, audio.mid * 0.9 + audio.impact * 0.4);
+    emissiveTarget.copy(AURORA_VIOLET).lerp(AURORA_TEAL, warm);
+    const mat = shell.material as THREE.MeshPhysicalMaterial;
+    mat.emissive.lerp(emissiveTarget, 0.04);
+    mat.emissiveIntensity = smoothEmissive.current.update(
+      0.55 + audio.rms * 0.9 + audio.impact * 1.0,
+      delta,
+    );
 
-      // 环的大小脉冲
-      const baseSize = 3.5 + i * 1.2;
-      const pulse = Math.sin(t * 1.5 + phases[i]!) * 0.15;
-      const musicPulse = freqAmount * 0.8 * intensity;
-      const finalSize = smoothSizes.current[i]!.update(
-        baseSize * (1 + pulse + musicPulse),
-        delta,
-      );
-      mesh.scale.setScalar(finalSize);
-
-      // 颜色随 mid 变化，每个环有偏移
-      const hue = 260 + i * 15 + audio.mid * 30;
-      const lightness = 60 + audio.treble * 20;
-      mat.color.setHSL(hue / 360, 0.75, lightness / 100);
-
-      // 透明度：bass 冲击时最亮，平时有呼吸感
-      const breath = 0.5 + Math.sin(t * 0.8 + i * 0.5) * 0.2;
-      mat.opacity = (0.08 + audio.rms * breath) * intensity;
-
-      // 环的旋转速度分层
-      mesh.rotation.z = t * (0.2 + i * 0.05) * (1 + audio.bass * 0.5);
-    });
+    // 外层柔光壳透明度随呼吸缓变
+    const haloMat = halo.material as THREE.MeshBasicMaterial;
+    haloMat.opacity = 0.14 + audio.rms * 0.18 + audio.impact * 0.18;
+    haloMat.color.lerp(emissiveTarget, 0.05);
   });
 
-  const rings = useMemo(() => {
-    return Array.from({ length: ringCount }, (_, i) => (
-      <mesh key={i} rotation={[Math.PI / 2, 0, i * 0.3]}>
-        <torusGeometry args={[3.5 + i * 1.2, 0.03, 8, 128]} />
-        <meshBasicMaterial
-          color={`hsl(${260 + i * 15}, 70%, 60%)`}
+  return (
+    <group ref={groupRef}>
+      {/* 光核主体：磨砂半透明，反射天幕环境 */}
+      <mesh ref={shellRef}>
+        <sphereGeometry args={[1.05, 64, 64]} />
+        <meshPhysicalMaterial
+          color={INDIGO_DEEP}
+          emissive={AURORA_VIOLET}
+          emissiveIntensity={0.6}
+          roughness={0.35}
+          metalness={0.15}
+          clearcoat={1}
+          clearcoatRoughness={0.4}
+          transmission={0.55}
+          ior={1.4}
+          thickness={1.2}
           transparent
-          opacity={0.1}
+          opacity={0.9}
+        />
+      </mesh>
+      {/* 柔光壳（外层大球，加法混合） */}
+      <mesh ref={haloRef} scale={1.8}>
+        <sphereGeometry args={[1.05, 32, 32]} />
+        <meshBasicMaterial
+          color={AURORA_VIOLET}
+          transparent
+          opacity={0.18}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
       </mesh>
-    ));
-  }, []);
-
-  return <group ref={groupRef}>{rings}</group>;
+    </group>
+  );
 }
 
-// ================= 音乐核心光球 =================
-function MusicalCoreOrb({
+// ================= 星尘（treble 驱动闪烁） =================
+function DriftingStardust({
   featuresRef,
   intensity,
 }: {
   featuresRef: React.RefObject<AudioFeatures>;
   intensity: number;
 }) {
-  const ref = useRef<THREE.Mesh>(null);
+  const ref = useRef<THREE.Group>(null);
   const audio = useAudioResponse(featuresRef);
-  const colorTarget = useRef(new THREE.Color());
 
-  const smoothScale = useRef(new SmoothValue(0.1));
-  const smoothGlow = useRef(new SmoothValue(0.1));
-
-  useFrame((state, delta) => {
-    const mesh = ref.current;
-    if (!mesh) return;
-
+  useFrame((_, delta) => {
     audio.update(delta);
-    const t = state.clock.elapsedTime;
-
-    // ====== 核心形态变化 ======
-    // Bass 驱动大的缩放脉冲
-    const bassPulse = audio.bass * 0.4 * intensity;
-    // RMS 驱动持续呼吸
-    const breath = 1 + audio.rms * 0.2 * intensity;
-    // 高频产生颤动
-    const trebleVibrate = 1 + audio.treble * 0.1;
-
-    const targetScale = (1 + bassPulse) * breath * trebleVibrate;
-    mesh.scale.setScalar(smoothScale.current.update(targetScale, delta));
-
-    // ====== 颜色变化 ======
-    // Mid 频段驱动色相偏移
-    const baseHue = 265;
-    const hueShift = audio.mid * 60 * intensity;
-    const saturation = 75 + audio.bass * 15;
-    const lightness = 50 + audio.treble * 10;
-
-    colorTarget.current.setHSL(
-      (baseHue + hueShift) / 360,
-      saturation / 100,
-      lightness / 100,
-    );
-
-    const mat = mesh.material as THREE.MeshStandardMaterial;
-    mat.emissive.lerp(colorTarget.current, 0.05);
-
-    // 发光强度随音乐爆发
-    const glowTarget = 0.7 + audio.rms * 2.5 * intensity + audio.impact * 3;
-    mat.emissiveIntensity = smoothGlow.current.update(glowTarget, delta);
-
-    // 旋转
-    mesh.rotation.y = t * 0.2 + audio.mid * 0.5;
-    mesh.rotation.x = Math.sin(t * 0.1) * 0.3 + audio.treble * 0.2;
+    const g = ref.current;
+    if (!g) return;
+    // 极慢自转，rms 微幅加速
+    g.rotation.y += delta * (0.02 + audio.rms * 0.05);
+    g.rotation.x += delta * 0.01;
   });
 
   return (
-    <Sphere ref={ref} args={[1.2, 64, 64]}>
-      <MeshDistortMaterial
-        color="#a78bfa"
-        emissive="#818cf8"
-        emissiveIntensity={1}
-        roughness={0.15}
-        metalness={0.5}
-        distort={0.4}
-        speed={2.5}
-        transparent
-        opacity={0.95}
+    <group ref={ref}>
+      <Sparkles
+        count={220}
+        scale={[22, 14, 22]}
+        size={4}
+        speed={0.25}
+        opacity={0.55 * intensity}
+        color={COOL_WHITE}
+        noise={0.6}
       />
-    </Sphere>
+      <Sparkles
+        count={120}
+        scale={[14, 10, 14]}
+        size={2.5}
+        speed={0.35}
+        opacity={0.45 * intensity}
+        color={AURORA_TEAL}
+        noise={0.7}
+      />
+    </group>
   );
 }
 
-// ================= 音乐星雾 =================
-function MusicalStarMist({
-  featuresRef,
-}: {
-  featuresRef: React.RefObject<AudioFeatures>;
-}) {
-  const ref = useRef<THREE.Points>(null);
-  const audio = useAudioResponse(featuresRef);
-  const starCount = 2500;
-
-  const positions = useMemo(() => {
-    const arr = new Float32Array(starCount * 3);
-    for (let i = 0; i < starCount; i++) {
-      const r = 6 + Math.random() * 25;
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      arr[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      arr[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      arr[i * 3 + 2] = r * Math.cos(phi);
-    }
-    return arr;
-  }, []);
-
-  useFrame((state, delta) => {
-    const points = ref.current;
-    if (!points) return;
-
-    audio.update(delta);
-    const t = state.clock.elapsedTime;
-
-    // 整体旋转：低频驱动外层，高频驱动内层
-    points.rotation.y = t * 0.04 + audio.bass * 0.1;
-    points.rotation.x = Math.sin(t * 0.08) * 0.15 + audio.mid * 0.2;
-
-    const mat = points.material as THREE.PointsMaterial;
-
-    // 大小：mid 驱动整体，treble 驱动闪烁
-    mat.size = 0.07 + audio.mid * 0.06 + Math.sin(t * 3) * 0.01 * audio.treble;
-
-    // 颜色呼吸
-    const hue = 270 + Math.sin(t * 0.2) * 15 + audio.mid * 25;
-    mat.color.setHSL(hue / 360, 0.7, 0.75);
-
-    // 透明度脉冲
-    mat.opacity = 0.5 + audio.rms * 0.3 + Math.sin(t * 0.5) * 0.08;
-  });
-
-  return (
-    <points ref={ref}>
-      <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
-      </bufferGeometry>
-      <pointsMaterial
-        color="#e9d5ff"
-        size={0.08}
-        transparent
-        opacity={0.5}
-        blending={THREE.AdditiveBlending}
-        depthWrite={false}
-        sizeAttenuation
-      />
-    </points>
-  );
-}
-
-// ================= 粒子爆发层（Beat Drop 时） =================
-function ImpactBursts({
+// ================= 节拍爆发环（对象池复用） =================
+function BeatShockPool({
   featuresRef,
   intensity,
 }: {
@@ -252,17 +336,19 @@ function ImpactBursts({
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const audio = useAudioResponse(featuresRef);
-  const MAX_BURSTS = 8;
-  const bursts = useRef<
-    { pos: THREE.Vector3; life: number; size: number; color: THREE.Color }[]
-  >([]);
+  const MAX = 6;
 
+  type Shock = { life: number; maxLife: number; tilt: THREE.Euler };
+  const shocks = useRef<Shock[]>([]);
+
+  // 池化的 mesh：共享 torus geometry；每个 mesh 独立 material（因为 opacity/color 不同）
   const pool = useMemo(() => {
-    const geo = new THREE.SphereGeometry(1, 16, 16);
-    return Array.from({ length: MAX_BURSTS }, () => {
+    const geo = new THREE.TorusGeometry(1, 0.06, 12, 96);
+    return Array.from({ length: MAX }, () => {
       const mesh = new THREE.Mesh(
         geo,
         new THREE.MeshBasicMaterial({
+          color: AURORA_TEAL,
           transparent: true,
           opacity: 0,
           blending: THREE.AdditiveBlending,
@@ -277,54 +363,54 @@ function ImpactBursts({
   useEffect(() => {
     const group = groupRef.current;
     if (!group) return;
-    for (const mesh of pool) group.add(mesh);
+    for (const m of pool) group.add(m);
     return () => {
-      for (const mesh of pool) {
-        group.remove(mesh);
-        (mesh.material as THREE.Material).dispose();
+      for (const m of pool) {
+        group.remove(m);
+        (m.material as THREE.Material).dispose();
       }
       pool[0]?.geometry.dispose();
     };
   }, [pool]);
 
+  const tmpColor = useMemo(() => new THREE.Color(), []);
+
   useFrame((_, delta) => {
     if (!groupRef.current) return;
-
     audio.update(delta);
 
-    // Bass 冲击时产生爆发粒子
-    if (audio.isBeatDrop && bursts.current.length < MAX_BURSTS) {
-      const angle = Math.random() * Math.PI * 2;
-      const dist = 2 + Math.random() * 4;
-      bursts.current.push({
-        pos: new THREE.Vector3(
-          Math.cos(angle) * dist,
-          (Math.random() - 0.5) * 3,
-          Math.sin(angle) * dist,
-        ),
+    // 只在真节拍触发，慢歌下会稀疏
+    if (audio.isBeatDrop && shocks.current.length < MAX) {
+      shocks.current.push({
         life: 1,
-        size: audio.impact * 2,
-        color: new THREE.Color().setHSL(0.7 + Math.random() * 0.1, 0.8, 0.6),
+        maxLife: 1,
+        tilt: new THREE.Euler(
+          (Math.random() - 0.5) * 0.6,
+          Math.random() * Math.PI,
+          (Math.random() - 0.5) * 0.4,
+        ),
       });
     }
 
-    // 更新爆发
-    bursts.current = bursts.current.filter((b) => {
-      b.life -= delta * 1.5;
-      b.size += delta * 3 * intensity;
-      return b.life > 0;
+    // 更新
+    shocks.current = shocks.current.filter((s) => {
+      s.life -= delta * 0.6; // 慢歌节奏：让爆发环慢慢褪
+      return s.life > 0;
     });
 
-    for (let i = 0; i < MAX_BURSTS; i++) {
+    for (let i = 0; i < MAX; i++) {
       const mesh = pool[i]!;
-      const b = bursts.current[i];
-      if (b) {
+      const s = shocks.current[i];
+      if (s) {
         mesh.visible = true;
-        mesh.position.copy(b.pos);
-        mesh.scale.setScalar(b.size);
+        const grow = (1 - s.life) * 8 * intensity + 0.4;
+        mesh.scale.set(grow, grow, grow * 0.6);
+        mesh.rotation.copy(s.tilt);
         const mat = mesh.material as THREE.MeshBasicMaterial;
-        mat.opacity = b.life * 0.4;
-        mat.color.copy(b.color);
+        mat.opacity = s.life * s.life * 0.35;
+        // 从 teal 起随扩散逐渐偏 violet（锁色）
+        tmpColor.copy(AURORA_TEAL).lerp(AURORA_VIOLET, 1 - s.life);
+        mat.color.copy(tmpColor);
       } else {
         mesh.visible = false;
       }
@@ -342,31 +428,116 @@ export function EtherealGlowScene({
 }: VisualizerProps) {
   return (
     <ThreeVisualizerShell>
-    <Canvas
-      className="size-full"
-      camera={{ position: [0, 0, 10], fov: 55 }}
-      gl={{ antialias: true }}
-      onCreated={({ gl, scene }) => {
-        scene.fog = new THREE.Fog("#160f30", 14, 46);
-        onCanvasReady?.(gl.domElement);
-      }}
-    >
-      <SceneSpringEntry>
-      <Suspense fallback={null}>
-        <SceneEnvironment variant="night" intensity={0.52} />
-        <GradientBackdrop top="#050418" horizon="#2b1a4d" bottom="#160f30" />
-        <ambientLight intensity={0.1} color="#a78bfa" />
-        <pointLight position={[0, 0, 4]} intensity={2.5} color="#ddd6fe" distance={30} />
+      <Canvas
+        className="size-full"
+        camera={{ position: [0, 0.4, 9.5], fov: 55 }}
+        gl={{ antialias: true }}
+        onCreated={({ gl, scene }) => {
+          // 指数雾：让远处极光幕布融进天幕，绝不虚空
+          scene.fog = new THREE.FogExp2("#0a0725", 0.038);
+          onCanvasReady?.(gl.domElement);
+        }}
+      >
+        <SceneSpringEntry>
+          <Suspense fallback={null}>
+            <SceneEnvironment variant="night" intensity={0.45} />
+            <GradientBackdrop
+              top={SKY_TOP}
+              horizon={SKY_HORIZON}
+              bottom={SKY_BOTTOM}
+            />
 
-        <MusicalStarMist featuresRef={featuresRef} />
-        <MusicalAuroraRings featuresRef={featuresRef} intensity={intensity} />
-        <MusicalCoreOrb featuresRef={featuresRef} intensity={intensity} />
-        <ImpactBursts featuresRef={featuresRef} intensity={intensity} />
+            {/* 三层灯光：紫底冷光 + 前上青绿点光 + 后侧紫光轮廓 */}
+            <ambientLight intensity={0.22} color="#3a2a70" />
+            <pointLight
+              position={[0, 3, 4]}
+              intensity={2.2}
+              color="#4de5c2"
+              distance={22}
+            />
+            <pointLight
+              position={[-4, -1, -3]}
+              intensity={1.4}
+              color="#8a6bff"
+              distance={26}
+            />
 
-        <DreamyPostProcessing intensity={intensity} />
-      </Suspense>
-      </SceneSpringEntry>
-    </Canvas>
+            {/* 极光幕布：4 条大块面丝带，环绕光核，不同深度/角度错开 */}
+            <AuroraCurtain
+              featuresRef={featuresRef}
+              intensity={intensity}
+              seed={0.11}
+              position={[-3.4, 0.6, -1.5]}
+              rotation={[0, 0.25, -0.05]}
+              scale={[1.15, 1.05, 1]}
+            />
+            <AuroraCurtain
+              featuresRef={featuresRef}
+              intensity={intensity}
+              seed={0.53}
+              position={[3.2, 0.4, -2.2]}
+              rotation={[0, -0.28, 0.04]}
+              scale={[1.2, 1.15, 1]}
+            />
+            <AuroraCurtain
+              featuresRef={featuresRef}
+              intensity={intensity}
+              seed={0.82}
+              position={[-1.2, 1.2, -4.5]}
+              rotation={[0, 0.05, -0.02]}
+              scale={[1.35, 1.25, 1]}
+            />
+            <AuroraCurtain
+              featuresRef={featuresRef}
+              intensity={intensity}
+              seed={0.37}
+              position={[1.8, 0.8, -3.6]}
+              rotation={[0, -0.08, 0.03]}
+              scale={[1.28, 1.2, 1]}
+            />
+
+            {/* 星尘 */}
+            <DriftingStardust
+              featuresRef={featuresRef}
+              intensity={intensity}
+            />
+
+            {/* Hero 光核（居中偏下，给舞台留呼吸） */}
+            <group position={[0, -0.2, 0]}>
+              <CalmCoreOrb
+                featuresRef={featuresRef}
+                intensity={intensity}
+              />
+            </group>
+
+            {/* 节拍爆发环 */}
+            <BeatShockPool featuresRef={featuresRef} intensity={intensity} />
+
+            {/* 电影级后期 */}
+            <EffectComposer multisampling={2}>
+              <DepthOfField
+                focusDistance={0.014}
+                focalLength={0.05}
+                bokehScale={2.2}
+              />
+              <Bloom
+                intensity={1.3 + intensity * 0.9}
+                luminanceThreshold={0.22}
+                luminanceSmoothing={0.9}
+                mipmapBlur
+              />
+              {/* 冷调 + 略降饱和的电影感 */}
+              <HueSaturation hue={0.03} saturation={0.08} />
+              <BrightnessContrast brightness={-0.03} contrast={0.14} />
+              <Noise
+                opacity={0.03}
+                blendFunction={BlendFunction.OVERLAY}
+              />
+              <Vignette eskil={false} offset={0.3} darkness={0.7} />
+            </EffectComposer>
+          </Suspense>
+        </SceneSpringEntry>
+      </Canvas>
     </ThreeVisualizerShell>
   );
 }
