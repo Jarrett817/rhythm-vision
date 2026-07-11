@@ -205,80 +205,58 @@ function CalmCoreOrb({
   intensity: number;
 }) {
   const groupRef = useRef<THREE.Group>(null);
-  const shellRef = useRef<THREE.Mesh>(null);
-  const haloRef = useRef<THREE.Mesh>(null);
   const audio = useAudioResponse(featuresRef);
 
   const smoothScale = useRef(new SmoothValue(0.04));
-  const smoothEmissive = useRef(new SmoothValue(0.05));
   const emissiveTarget = useMemo(() => new THREE.Color(), []);
+
+  // 多层柔光壳：由内到外递减透明度，形成"体积辉光渐变"，无硬表面
+  const shellCount = 5;
+  const baseOpacities = useMemo(
+    () => [0.32, 0.2, 0.12, 0.07, 0.04],
+    [],
+  );
 
   useFrame((state, delta) => {
     const group = groupRef.current;
-    const shell = shellRef.current;
-    const halo = haloRef.current;
-    if (!group || !shell || !halo) return;
+    if (!group) return;
 
     audio.update(delta);
     const t = state.clock.elapsedTime;
 
-    // 极慢呼吸：主要跟 rms 走，冲击时轻微鼓一下
-    const target =
-      (1 + audio.rms * 0.12 + audio.impact * 0.18) * intensity;
+    // 极慢呼吸
+    const target = (1 + audio.rms * 0.14 + audio.impact * 0.2) * intensity;
     group.scale.setScalar(smoothScale.current.update(target, delta));
+    group.rotation.y = t * 0.04;
 
-    // 极慢旋转，不追频段
-    group.rotation.y = t * 0.05;
-    group.rotation.x = Math.sin(t * 0.07) * 0.1;
-
-    // 颜色：紫 → 青，锁色（mid 驱动偏移）
+    // 锁色：紫 → 青（mid 驱动偏移）
     const warm = Math.min(1, audio.mid * 0.9 + audio.impact * 0.4);
     emissiveTarget.copy(AURORA_VIOLET).lerp(AURORA_TEAL, warm);
-    const mat = shell.material as THREE.MeshPhysicalMaterial;
-    mat.emissive.lerp(emissiveTarget, 0.04);
-    // 主体几何几乎不自发光，辉光交给外层柔光壳/极光幕布/星尘
-    mat.emissiveIntensity = smoothEmissive.current.update(
-      0.12 + audio.rms * 0.28 + audio.impact * 0.4,
-      delta,
-    );
 
-    // 外层柔光壳透明度随呼吸缓变
-    const haloMat = halo.material as THREE.MeshBasicMaterial;
-    haloMat.opacity = 0.14 + audio.rms * 0.18 + audio.impact * 0.18;
-    haloMat.color.lerp(emissiveTarget, 0.05);
+    const energy = 0.6 + audio.rms * 0.6 + audio.impact * 0.5;
+    group.children.forEach((child, i) => {
+      const mesh = child as THREE.Mesh;
+      const mat = mesh.material as THREE.MeshBasicMaterial;
+      mat.color.lerp(emissiveTarget, 0.05);
+      // 内层随能量微微抬亮，外层保持柔和，整体像一团呼吸的光
+      mat.opacity = baseOpacities[i]! * energy;
+    });
   });
 
   return (
     <group ref={groupRef}>
-      {/* 光核主体：磨砂半透明，反射天幕环境 */}
-      <mesh ref={shellRef}>
-        <sphereGeometry args={[1.05, 64, 64]} />
-        <meshPhysicalMaterial
-          color={INDIGO_DEEP}
-          emissive={AURORA_VIOLET}
-          emissiveIntensity={0.6}
-          roughness={0.35}
-          metalness={0.15}
-          clearcoat={1}
-          clearcoatRoughness={0.4}
-          transmission={0.55}
-          ior={1.4}
-          thickness={1.2}
-          transparent
-          opacity={0.9}
-        />
-      </mesh>
-      {/* 柔光壳（外层大球，加法混合） */}
-      <mesh ref={haloRef} scale={1.8}>
-        <sphereGeometry args={[1.05, 32, 32]} />
-        <meshBasicMaterial
-          color={AURORA_VIOLET}
-          transparent
-          opacity={0.18}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-        />
-      </mesh>
+      {baseOpacities.map((op, i) => (
+        <mesh key={i} scale={0.8 + i * 0.55}>
+          <sphereGeometry args={[1, 32, 32]} />
+          <meshBasicMaterial
+            color={AURORA_VIOLET}
+            transparent
+            opacity={op}
+            blending={THREE.AdditiveBlending}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
     </group>
   );
 }

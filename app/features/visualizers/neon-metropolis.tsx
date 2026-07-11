@@ -177,8 +177,331 @@ function FarSilhouette({
   );
 }
 
+// ============ 中景剪影天际线(拉开纵深,软剪影,不是硬 box) ============
+// 一层更近、更暗、更集中在两侧的剪影,让远景到近景之间有过渡
+const midSkylineFragment = /* glsl */ `
+${GLSL_CLASSIC_NOISE_2D}
+
+uniform float uTime;
+uniform float uRms;
+uniform float uMid;
+uniform vec3 uIndigo;
+uniform vec3 uMagenta;
+uniform vec3 uCyan;
+
+varying vec2 vUv;
+
+float fbm(vec2 p) {
+  float v = 0.0;
+  float a = 0.5;
+  for (int i = 0; i < 4; i++) {
+    v += a * cnoise(p);
+    p *= 2.1;
+    a *= 0.5;
+  }
+  return v;
+}
+
+void main() {
+  vec2 uv = vUv;
+  float drift = uTime * 0.025 + uRms * 0.06;
+  // 中频剪影:更陡峭高低起伏,像近郊楼群
+  float h = fbm(vec2(uv.x * 6.5 + drift, 5.0));
+  float h2 = fbm(vec2(uv.x * 14.0 - drift * 0.7, 12.0)) * 0.4;
+  float skyline = 0.5 + h * 0.55 + h2;
+  // 中心大幅压低给歌手
+  float centerGap = 1.0 - smoothstep(0.0, 0.28, abs(uv.x - 0.5));
+  skyline -= centerGap * 0.55;
+
+  float horizon = 0.08 + skyline * 0.34;
+  float building = 1.0 - smoothstep(horizon - 0.02, horizon + 0.035, uv.y);
+  // 中景整体压暗
+  building *= 0.75;
+
+  // 稀疏窗灯:比远景大一点点,依然是噪波遮罩
+  float wmask = fbm(vec2(uv.x * 90.0, uv.y * 130.0 - uTime * 0.03));
+  wmask = smoothstep(0.32, 0.44, wmask) * building;
+  float edgeFall = smoothstep(0.05, 0.42, abs(uv.x - 0.5));
+  wmask *= edgeFall * (0.4 + uMid * 0.6);
+
+  // 楼体颜色偏冷:靛蓝为主,底部染品红/青做rim反光
+  vec3 buildingCol = uIndigo * 0.35;
+  buildingCol = mix(buildingCol, uIndigo * 0.7, uv.y * 1.6);
+  // 左偏品红 右偏青
+  float sideTint = smoothstep(0.35, 0.65, uv.x);
+  buildingCol += mix(uMagenta, uCyan, sideTint) * 0.055;
+  // 窗灯
+  buildingCol += vec3(1.0, 0.75, 0.42) * wmask * 1.5;
+
+  float alpha = building;
+  gl_FragColor = vec4(buildingCol, alpha);
+}
+`;
+
+function MidSilhouette({
+  featuresRef,
+}: {
+  featuresRef: React.RefObject<AudioFeatures>;
+}) {
+  const matRef = useRef<CSM<typeof THREE.MeshBasicMaterial>>(null);
+  const uniforms = useMemo(
+    () => ({
+      uTime: { value: 0 },
+      uRms: { value: 0 },
+      uMid: { value: 0 },
+      uIndigo: { value: NIGHT_INDIGO.clone() },
+      uMagenta: { value: NEON_MAGENTA.clone() },
+      uCyan: { value: NEON_CYAN.clone() },
+    }),
+    [],
+  );
+  const audio = useAudioResponse(featuresRef);
+
+  useFrame((state, delta) => {
+    const mat = matRef.current;
+    if (!mat) return;
+    audio.update(delta);
+    mat.uniforms.uTime!.value = state.clock.elapsedTime;
+    mat.uniforms.uRms!.value = audio.rms;
+    mat.uniforms.uMid!.value = audio.mid;
+  });
+
+  return (
+    <mesh position={[0, 0.4, -14]}>
+      <planeGeometry args={[60, 20]} />
+      <CustomShaderMaterial
+        ref={matRef}
+        baseMaterial={THREE.MeshBasicMaterial}
+        vertexShader={skylineVertex}
+        fragmentShader={midSkylineFragment}
+        uniforms={uniforms}
+        transparent
+        depthWrite={false}
+      />
+    </mesh>
+  );
+}
+
+// ============ 雨夜氛围(斜向雨丝 shader,软层) ============
+// 全屏 additive plane,fbm+条纹函数生成斜下雨丝,treble/rms 驱动强度
+const rainFragment = /* glsl */ `
+${GLSL_CLASSIC_NOISE_2D}
+
+uniform float uTime;
+uniform float uRms;
+uniform float uTreble;
+uniform vec3 uCyan;
+uniform vec3 uMagenta;
+
+varying vec2 vUv;
+
+// 分层雨丝:每层不同速度/密度/角度轻微差异,营造深度
+float rainLayer(vec2 uv, float scale, float speed, float slant, float density) {
+  // 斜切坐标 -> 生成对角线条纹
+  vec2 p = uv * scale;
+  p.x += p.y * slant;
+  p.y -= uTime * speed;
+  // 高频窄条纹 fract 差 -> 亮短线
+  float streak = fract(p.y * 0.5 + cnoise(vec2(floor(p.x) * 1.7, 0.0)) * 6.0);
+  // 每条列一个 offset,不整齐
+  float col = fract(p.x + cnoise(vec2(floor(p.x), 0.0)) * 3.0);
+  // 只有极窄一段亮
+  float line = smoothstep(0.0, 0.02, streak) * (1.0 - smoothstep(0.02, 0.35, streak));
+  // 列稀疏遮罩
+  float colMask = smoothstep(1.0 - density, 1.0, col);
+  return line * colMask;
+}
+
+void main() {
+  vec2 uv = vUv;
+  float slant = -0.35;
+  // 三层深度雨
+  float r1 = rainLayer(uv, vec2(80.0, 40.0).x * 0.9, 1.4, slant, 0.055) * 0.9;
+  float r2 = rainLayer(uv * 1.35 + vec2(0.13, 0.0), 120.0, 2.1, slant - 0.05, 0.04) * 0.7;
+  float r3 = rainLayer(uv * 1.8 + vec2(0.31, 0.0), 180.0, 2.9, slant - 0.02, 0.028) * 0.5;
+  float rain = r1 + r2 + r3;
+
+  // 雨雾(极缓大尺度噪波,rms 呼吸)
+  float mist = cnoise(vec2(uv.x * 1.3 + uTime * 0.02, uv.y * 1.7 - uTime * 0.012));
+  mist = smoothstep(-0.2, 0.6, mist) * 0.18;
+
+  // 中心压弱一点,给歌手负空间
+  float centerFall = smoothstep(0.0, 0.35, abs(uv.x - 0.5));
+  rain *= 0.35 + centerFall * 0.65;
+
+  // 雨强度:rms 底 + treble 驱动前景高频
+  float intensity = 0.32 + uRms * 0.55 + uTreble * 0.7;
+  rain *= intensity;
+
+  // 雨着色:偏冷青蓝,顶部略染品红反射
+  vec3 rainTint = mix(uCyan * 0.55, uMagenta * 0.4, smoothstep(0.4, 1.0, uv.y));
+  vec3 col = rainTint * rain + mix(vec3(0.02, 0.04, 0.08), uMagenta * 0.08, uv.y) * mist;
+
+  float alpha = clamp(rain * 1.2 + mist * 0.6, 0.0, 0.85);
+  gl_FragColor = vec4(col, alpha);
+}
+`;
+
+function RainVeil({
+  featuresRef,
+}: {
+  featuresRef: React.RefObject<AudioFeatures>;
+}) {
+  const matRef = useRef<CSM<typeof THREE.MeshBasicMaterial>>(null);
+  const uniforms = useMemo(
+    () => ({
+      uTime: { value: 0 },
+      uRms: { value: 0 },
+      uTreble: { value: 0 },
+      uCyan: { value: NEON_CYAN.clone() },
+      uMagenta: { value: NEON_MAGENTA.clone() },
+    }),
+    [],
+  );
+  const audio = useAudioResponse(featuresRef);
+
+  useFrame((state, delta) => {
+    const mat = matRef.current;
+    if (!mat) return;
+    audio.update(delta);
+    mat.uniforms.uTime!.value = state.clock.elapsedTime;
+    mat.uniforms.uRms!.value = audio.rms;
+    mat.uniforms.uTreble!.value = audio.treble;
+  });
+
+  return (
+    <mesh position={[0, 0.5, -2.5]} renderOrder={5}>
+      <planeGeometry args={[42, 24]} />
+      <CustomShaderMaterial
+        ref={matRef}
+        baseMaterial={THREE.MeshBasicMaterial}
+        vertexShader={skylineVertex}
+        fragmentShader={rainFragment}
+        uniforms={uniforms}
+        transparent
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+        toneMapped={false}
+      />
+    </mesh>
+  );
+}
+
+// ============ 体积光束/大气雾(中景与近景之间纵深) ============
+// 顶部斜下的光锥 + 大气雾团,mid 缓呼吸,bass 微推
+const beamFragment = /* glsl */ `
+${GLSL_CLASSIC_NOISE_2D}
+
+uniform float uTime;
+uniform float uRms;
+uniform float uMid;
+uniform float uBass;
+uniform vec3 uMagenta;
+uniform vec3 uCyan;
+
+varying vec2 vUv;
+
+float fbm(vec2 p) {
+  float v = 0.0;
+  float a = 0.55;
+  for (int i = 0; i < 4; i++) {
+    v += a * cnoise(p);
+    p *= 2.2;
+    a *= 0.5;
+  }
+  return v;
+}
+
+// 一条从上向下、略斜的软光锥
+float beam(vec2 uv, float cx, float cwTop, float cwBot, float slant) {
+  // 沿 y 从 0(下)到 1(上) 变宽
+  float y = uv.y;
+  float halfW = mix(cwBot, cwTop, y);
+  float centerX = cx + slant * (y - 0.5);
+  float d = abs(uv.x - centerX);
+  // 软边
+  float core = 1.0 - smoothstep(0.0, halfW, d);
+  // 上强下弱
+  core *= smoothstep(-0.05, 0.95, y);
+  return core;
+}
+
+void main() {
+  vec2 uv = vUv;
+  // 两束不对称光锥
+  float b1 = beam(uv, 0.28, 0.02, 0.16, -0.06);
+  float b2 = beam(uv, 0.72, 0.02, 0.14, 0.05);
+  // 加进噪波,让光锥呈现空气尘埃感
+  float dust = fbm(vec2(uv.x * 3.5 - uTime * 0.05, uv.y * 4.5 + uTime * 0.08));
+  dust = smoothstep(-0.2, 0.9, dust);
+  float beams = (b1 + b2) * (0.55 + dust * 0.75);
+  // 底部大气雾团
+  float haze = fbm(vec2(uv.x * 1.6 + uTime * 0.03, uv.y * 2.0 - uTime * 0.02));
+  haze = smoothstep(0.1, 0.9, haze) * smoothstep(0.6, 0.0, uv.y) * 0.35;
+
+  // 音频呼吸:mid 主体,bass 底噪
+  float pulse = 0.35 + uMid * 0.7 + uBass * 0.25 + uRms * 0.2;
+  beams *= pulse;
+
+  // 光锥着色:左偏品红右偏青
+  vec3 beamCol = mix(uMagenta * 0.9, uCyan * 0.85, smoothstep(0.35, 0.65, uv.x));
+  vec3 hazeCol = mix(uMagenta * 0.28, uCyan * 0.22, smoothstep(0.4, 0.6, uv.x));
+
+  vec3 col = beamCol * beams * 0.55 + hazeCol * haze;
+  float alpha = clamp(beams * 0.42 + haze * 0.5, 0.0, 0.75);
+  gl_FragColor = vec4(col, alpha);
+}
+`;
+
+function LightBeams({
+  featuresRef,
+}: {
+  featuresRef: React.RefObject<AudioFeatures>;
+}) {
+  const matRef = useRef<CSM<typeof THREE.MeshBasicMaterial>>(null);
+  const uniforms = useMemo(
+    () => ({
+      uTime: { value: 0 },
+      uRms: { value: 0 },
+      uMid: { value: 0 },
+      uBass: { value: 0 },
+      uMagenta: { value: NEON_MAGENTA.clone() },
+      uCyan: { value: NEON_CYAN.clone() },
+    }),
+    [],
+  );
+  const audio = useAudioResponse(featuresRef);
+
+  useFrame((state, delta) => {
+    const mat = matRef.current;
+    if (!mat) return;
+    audio.update(delta);
+    mat.uniforms.uTime!.value = state.clock.elapsedTime;
+    mat.uniforms.uRms!.value = audio.rms;
+    mat.uniforms.uMid!.value = audio.mid;
+    mat.uniforms.uBass!.value = audio.bass;
+  });
+
+  return (
+    <mesh position={[0, 0.5, -10]} renderOrder={2}>
+      <planeGeometry args={[50, 18]} />
+      <CustomShaderMaterial
+        ref={matRef}
+        baseMaterial={THREE.MeshBasicMaterial}
+        vertexShader={skylineVertex}
+        fragmentShader={beamFragment}
+        uniforms={uniforms}
+        transparent
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+        toneMapped={false}
+      />
+    </mesh>
+  );
+}
+
 // ============ 近景锚点楼(唯一硬几何族) ============
-// 只有 ~8 栋楼作为构图锚点,分居画面左右两簇,中心全空给歌手,
+// ~14 栋楼作为构图锚点,分居画面左右两簇,中心留空给歌手,
 // 楼体不自发光,材质金属/低粗糙,吸霓虹光反射
 type AnchorSpec = {
   x: number;
@@ -192,16 +515,24 @@ type AnchorSpec = {
 };
 
 function buildAnchors(): AnchorSpec[] {
-  // 明确手工放置:左3右3+两栋更远的边界楼,断绝阵列感;高度/宽度差异大;不等距
+  // 手工放置:左7右7,中心 |x|<3.8 留空;高度/宽度/深度差异大;不等距
   return [
-    { x: -6.4, y: -2.2, z: -6.2, width: 1.6, height: 5.8, depth: 1.4, phase: 0.7, side: -1 },
-    { x: -8.6, y: -2.2, z: -7.0, width: 1.2, height: 4.2, depth: 1.2, phase: 1.9, side: -1 },
-    { x: -4.9, y: -2.2, z: -5.4, width: 1.0, height: 3.2, depth: 1.1, phase: 2.7, side: -1 },
-    { x: -11.2, y: -2.2, z: -8.1, width: 1.4, height: 7.1, depth: 1.5, phase: 3.4, side: -1 },
-    { x: 5.7, y: -2.2, z: -6.0, width: 1.5, height: 5.2, depth: 1.35, phase: 4.1, side: 1 },
-    { x: 8.3, y: -2.2, z: -6.9, width: 1.25, height: 4.6, depth: 1.25, phase: 5.0, side: 1 },
-    { x: 4.4, y: -2.2, z: -5.2, width: 0.95, height: 2.9, depth: 1.05, phase: 5.8, side: 1 },
-    { x: 10.8, y: -2.2, z: -8.4, width: 1.35, height: 6.5, depth: 1.45, phase: 6.4, side: 1 },
+    // 左簇 —— 前中后三层错开
+    { x: -3.9, y: -2.2, z: -4.8, width: 0.9, height: 2.6, depth: 0.95, phase: 0.3, side: -1 },
+    { x: -5.4, y: -2.2, z: -5.6, width: 1.15, height: 4.7, depth: 1.25, phase: 0.9, side: -1 },
+    { x: -6.6, y: -2.2, z: -6.4, width: 1.55, height: 6.1, depth: 1.4, phase: 1.6, side: -1 },
+    { x: -8.5, y: -2.2, z: -7.2, width: 1.2, height: 4.3, depth: 1.2, phase: 2.3, side: -1 },
+    { x: -9.9, y: -2.2, z: -7.9, width: 1.35, height: 5.4, depth: 1.35, phase: 3.0, side: -1 },
+    { x: -11.6, y: -2.2, z: -8.6, width: 1.5, height: 7.2, depth: 1.5, phase: 3.7, side: -1 },
+    { x: -13.4, y: -2.2, z: -9.2, width: 1.1, height: 3.6, depth: 1.15, phase: 4.4, side: -1 },
+    // 右簇
+    { x: 3.7, y: -2.2, z: -4.6, width: 0.95, height: 2.4, depth: 1.0, phase: 5.1, side: 1 },
+    { x: 5.2, y: -2.2, z: -5.5, width: 1.25, height: 5.1, depth: 1.25, phase: 5.8, side: 1 },
+    { x: 6.9, y: -2.2, z: -6.3, width: 1.5, height: 6.6, depth: 1.45, phase: 6.4, side: 1 },
+    { x: 8.6, y: -2.2, z: -7.0, width: 1.15, height: 4.4, depth: 1.2, phase: 7.1, side: 1 },
+    { x: 10.4, y: -2.2, z: -7.7, width: 1.4, height: 5.9, depth: 1.35, phase: 7.8, side: 1 },
+    { x: 12.3, y: -2.2, z: -8.5, width: 1.3, height: 7.4, depth: 1.4, phase: 8.5, side: 1 },
+    { x: 14.2, y: -2.2, z: -9.3, width: 1.05, height: 3.4, depth: 1.1, phase: 9.2, side: 1 },
   ];
 }
 
@@ -283,6 +614,9 @@ function AnchorWindows({
       band: 0 | 1 | 2;
       size: number;
       baseIntensity: number;
+      // 点亮生活感律动:每盏窗有独立的"亮/暗"倾向,mid 会拉起熄灭的窗户
+      lifePhase: number;
+      lifeSpeed: number;
     }[] = [];
     // 每栋楼独立 seed
     for (const b of anchors) {
@@ -293,7 +627,7 @@ function AnchorWindows({
       };
       // 目标点数 = 楼面面积 * 密度, 但用泊松式抽样
       const area = b.width * b.height;
-      const targetCount = Math.max(6, Math.floor(area * 3.2));
+      const targetCount = Math.max(8, Math.floor(area * 4.0));
       const halfW = b.width * 0.5;
       const faceZ = b.z + b.depth * 0.5 + 0.005;
       const yStart = b.y + 0.35;
@@ -322,6 +656,8 @@ function AnchorWindows({
           band: (placed % 3) as 0 | 1 | 2,
           size: 0.11 + rnd() * 0.06,
           baseIntensity: 0.6 + rnd() * 0.55,
+          lifePhase: rnd() * Math.PI * 2,
+          lifeSpeed: 0.15 + rnd() * 0.5, // 极慢
         });
         placed++;
       }
@@ -331,7 +667,7 @@ function AnchorWindows({
 
   const total = windows.length;
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     const mesh = ref.current;
     if (!mesh) return;
     audio.update(delta);
@@ -339,9 +675,14 @@ function AnchorWindows({
     const rms = audio.rms;
     const bass = audio.bass;
     const treble = audio.treble;
+    const t = state.clock.elapsedTime;
 
     for (let i = 0; i < total; i++) {
       const w = windows[i]!;
+      // 生活感律动:每盏窗独立慢正弦决定"当前是不是点亮状态"
+      // mid(人声)会把接近熄灭的窗户重新拉亮
+      const life = 0.5 + Math.sin(t * w.lifeSpeed + w.lifePhase) * 0.5;
+      const lit = Math.min(1, Math.max(0.15, life + midVocal * 0.55));
       // 人声(mid)驱动主呼吸
       const vocalRhythm = 0.5 + Math.sin(w.phase + midVocal * 3.2) * 0.32;
       // 频段错拍
@@ -349,6 +690,7 @@ function AnchorWindows({
       const brightness =
         (0.22 + vocalRhythm * 0.32 + bandDrive * 0.55 + rms * 0.22 + audio.impact * 0.28) *
         w.baseIntensity *
+        lit *
         intensity;
 
       // 窗灯基本暖金,极少数(band==2)在高频时略偏品红
@@ -390,7 +732,43 @@ function AnchorWindows({
   );
 }
 
-// ============ 霓虹招牌(accent 层:少量,treble 闪) ============
+// ============ 霓虹招牌(accent 层:数量适度增加,shader 扫描线) ============
+// 招牌本身是软面片,shader 内做水平扫描亮带,treble 驱动
+const signVertex = /* glsl */ `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+const signFragment = /* glsl */ `
+uniform float uTime;
+uniform float uBrightness;
+uniform float uScan;
+uniform vec3 uColor;
+
+varying vec2 vUv;
+
+void main() {
+  vec2 uv = vUv;
+  // 基底亮:中心比边缘亮(圆角发光带)
+  float edgeFade = smoothstep(0.0, 0.15, uv.x) * smoothstep(1.0, 0.85, uv.x);
+  edgeFade *= smoothstep(0.0, 0.25, uv.y) * smoothstep(1.0, 0.75, uv.y);
+  float core = pow(edgeFade, 0.55);
+
+  // 扫描线:水平细带,uTime*uScan 循环
+  float scanY = fract(uv.x - uTime * uScan);
+  float scanLine = exp(-pow((scanY - 0.5) * 6.0, 2.0)) * 0.6;
+  // treble/scan 时叠加
+  float shine = core + scanLine * uBrightness * 0.5;
+
+  vec3 col = uColor * (0.7 + uBrightness * 0.9) * shine;
+  float alpha = clamp(shine * (0.4 + uBrightness * 0.5), 0.0, 1.0);
+  gl_FragColor = vec4(col, alpha);
+}
+`;
+
 function NeonBillboards({
   featuresRef,
   intensity,
@@ -404,12 +782,27 @@ function NeonBillboards({
   const signs = useMemo(
     () =>
       [
-        { x: -7.6, y: 1.4, z: -5.6, w: 2.0, h: 0.5, color: NEON_MAGENTA, band: 0 },
-        { x: -4.2, y: 3.1, z: -5.9, w: 1.4, h: 0.35, color: NEON_CYAN, band: 2 },
-        { x: 6.8, y: 1.1, z: -5.5, w: 1.9, h: 0.48, color: NEON_MAGENTA, band: 1 },
-        { x: 9.4, y: 3.0, z: -6.4, w: 1.5, h: 0.38, color: NEON_CYAN, band: 2 },
+        { x: -7.6, y: 1.4, z: -5.6, w: 2.0, h: 0.5, color: NEON_MAGENTA, band: 0, scan: 0.55 },
+        { x: -4.2, y: 3.1, z: -5.9, w: 1.4, h: 0.35, color: NEON_CYAN, band: 2, scan: 0.9 },
+        { x: -9.9, y: 2.4, z: -7.4, w: 1.1, h: 0.3, color: NEON_MAGENTA, band: 2, scan: 1.3 },
+        { x: 6.8, y: 1.1, z: -5.5, w: 1.9, h: 0.48, color: NEON_MAGENTA, band: 1, scan: 0.4 },
+        { x: 9.4, y: 3.0, z: -6.4, w: 1.5, h: 0.38, color: NEON_CYAN, band: 2, scan: 0.75 },
+        { x: 11.6, y: 1.8, z: -7.6, w: 1.2, h: 0.32, color: NEON_CYAN, band: 1, scan: 0.5 },
+        { x: -5.6, y: 0.4, z: -4.9, w: 0.9, h: 0.24, color: NEON_MAGENTA, band: 2, scan: 1.6 },
       ] as const,
     [],
+  );
+
+  // 为每个招牌单独持有 uniforms 引用
+  const uniformsList = useMemo(
+    () =>
+      signs.map((s) => ({
+        uTime: { value: 0 },
+        uBrightness: { value: 0.5 },
+        uScan: { value: s.scan },
+        uColor: { value: s.color.clone() },
+      })),
+    [signs],
   );
 
   useFrame((state, delta) => {
@@ -418,20 +811,18 @@ function NeonBillboards({
     audio.update(delta);
     const t = state.clock.elapsedTime;
 
-    group.children.forEach((child, i) => {
-      const mesh = child as THREE.Mesh;
+    for (let i = 0; i < signs.length; i++) {
       const s = signs[i]!;
-      const mat = mesh.material as THREE.MeshBasicMaterial;
-
+      const u = uniformsList[i]!;
       const drive = s.band === 0 ? audio.bass : s.band === 1 ? audio.mid : audio.treble;
       const flicker =
         s.band === 2
           ? 0.5 + Math.sin(t * 5.5 + i) * 0.15 + audio.treble * 0.35
           : 0.58 + Math.sin(t * 1.4 + i) * 0.1;
       const brightness = (flicker + drive * 0.7 + audio.impact * 0.55) * intensity;
-      mat.opacity = Math.min(1, 0.32 + brightness * 0.6);
-      mat.color.copy(s.color).multiplyScalar(0.85 + brightness * 0.8);
-    });
+      u.uTime.value = t;
+      u.uBrightness.value = Math.min(1.4, brightness);
+    }
   });
 
   return (
@@ -439,14 +830,16 @@ function NeonBillboards({
       {signs.map((s, i) => (
         <mesh key={i} position={[s.x, s.y, s.z]}>
           <planeGeometry args={[s.w, s.h]} />
-          <meshBasicMaterial
-            color={`#${s.color.getHexString()}`}
+          <CustomShaderMaterial
+            baseMaterial={THREE.MeshBasicMaterial}
+            vertexShader={signVertex}
+            fragmentShader={signFragment}
+            uniforms={uniformsList[i]}
             transparent
-            opacity={0.55}
             blending={THREE.AdditiveBlending}
             depthWrite={false}
-            side={THREE.DoubleSide}
             toneMapped={false}
+            side={THREE.DoubleSide}
           />
         </mesh>
       ))}
@@ -454,7 +847,7 @@ function NeonBillboards({
   );
 }
 
-// ============ 车流光轨(accent 线,bass 加速) ============
+// ============ 车流光轨(accent 线,bass 加速,更长更有速度感) ============
 function TrafficStreaks({
   featuresRef,
   intensity,
@@ -481,27 +874,40 @@ function TrafficStreaks({
       seed = (seed * 1103515245 + 12345) >>> 0;
       return (seed & 0xffff) / 0xffff;
     };
-    // 单条近道品红(尾灯)+ 单条远道青(头灯),数量减半破均匀
-    for (let i = 0; i < 10; i++) {
+    // 近道品红尾灯(长)
+    for (let i = 0; i < 12; i++) {
       arr.push({
-        x: (rnd() - 0.5) * 20,
+        x: (rnd() - 0.5) * 22,
         y: -1.86,
         z: -4.6,
-        w: 0.9 + rnd() * 0.7,
+        w: 1.6 + rnd() * 1.4, // 更长
         dir: -1,
         color: NEON_MAGENTA,
-        baseSpeed: 3.5 + rnd() * 2,
+        baseSpeed: 4.5 + rnd() * 2.5,
       });
     }
-    for (let i = 0; i < 10; i++) {
+    // 远道青头灯(略短)
+    for (let i = 0; i < 12; i++) {
       arr.push({
-        x: (rnd() - 0.5) * 20,
+        x: (rnd() - 0.5) * 22,
         y: -1.9,
         z: -5.6,
-        w: 0.75 + rnd() * 0.6,
+        w: 1.2 + rnd() * 1.1,
         dir: 1,
         color: NEON_CYAN,
-        baseSpeed: 3.0 + rnd() * 1.8,
+        baseSpeed: 3.8 + rnd() * 2.2,
+      });
+    }
+    // 更远一道稀疏光轨(纵深)
+    for (let i = 0; i < 6; i++) {
+      arr.push({
+        x: (rnd() - 0.5) * 24,
+        y: -1.92,
+        z: -7.2,
+        w: 0.9 + rnd() * 0.8,
+        dir: rnd() > 0.5 ? 1 : -1,
+        color: rnd() > 0.5 ? NEON_MAGENTA : NEON_CYAN,
+        baseSpeed: 2.5 + rnd() * 1.4,
       });
     }
     return arr;
@@ -513,7 +919,7 @@ function TrafficStreaks({
     audio.update(delta);
 
     const speedMult = smoothSpeed.current.update(
-      1 + audio.bass * 3.2 + audio.impact * 2,
+      1 + audio.bass * 4.0 + audio.impact * 2.5,
       delta,
     );
 
@@ -523,10 +929,10 @@ function TrafficStreaks({
       const mat = mesh.material as THREE.MeshBasicMaterial;
 
       mesh.position.x += lane.dir * lane.baseSpeed * speedMult * delta * intensity;
-      if (lane.dir < 0 && mesh.position.x < -12) mesh.position.x = 12 + Math.random() * 2;
-      if (lane.dir > 0 && mesh.position.x > 12) mesh.position.x = -12 - Math.random() * 2;
+      if (lane.dir < 0 && mesh.position.x < -14) mesh.position.x = 14 + Math.random() * 2;
+      if (lane.dir > 0 && mesh.position.x > 14) mesh.position.x = -14 - Math.random() * 2;
 
-      mat.opacity = Math.min(0.9, 0.5 + audio.bass * 0.32 + audio.rms * 0.14) * intensity;
+      mat.opacity = Math.min(0.95, 0.55 + audio.bass * 0.35 + audio.rms * 0.14) * intensity;
     });
   });
 
@@ -534,11 +940,11 @@ function TrafficStreaks({
     <group ref={groupRef}>
       {lanes.map((lane, i) => (
         <mesh key={i} position={[lane.x, lane.y, lane.z]}>
-          <planeGeometry args={[lane.w, 0.045]} />
+          <planeGeometry args={[lane.w, 0.05]} />
           <meshBasicMaterial
             color={`#${lane.color.getHexString()}`}
             transparent
-            opacity={0.72}
+            opacity={0.75}
             blending={THREE.AdditiveBlending}
             depthWrite={false}
             toneMapped={false}
@@ -549,7 +955,8 @@ function TrafficStreaks({
   );
 }
 
-// ============ 湿街反光地面(锚定下沿) ============
+// ============ 湿街反光地面 + 霓虹倒影/涟漪(shader 软叠层) ============
+// 底层保持金属地面(反射环境),上叠一层 shader plane 画程序化倒影拖尾/涟漪
 function WetStreet({
   featuresRef,
   intensity,
@@ -595,6 +1002,122 @@ function WetStreet({
   );
 }
 
+// 湿地霓虹倒影 shader: 品红/青长条竖向拖尾 + 缓涟漪
+const reflectionFragment = /* glsl */ `
+${GLSL_CLASSIC_NOISE_2D}
+
+uniform float uTime;
+uniform float uRms;
+uniform float uMid;
+uniform float uBass;
+uniform vec3 uMagenta;
+uniform vec3 uCyan;
+
+varying vec2 vUv;
+
+float fbm(vec2 p) {
+  float v = 0.0;
+  float a = 0.5;
+  for (int i = 0; i < 4; i++) {
+    v += a * cnoise(p);
+    p *= 2.1;
+    a *= 0.5;
+  }
+  return v;
+}
+
+void main() {
+  vec2 uv = vUv;
+  // 视觉上:地面 plane 已旋转,uv.y 是"离摄像机远近"(远处 uv.y~0, 近处 uv.y~1)
+  // 让倒影竖向拖尾:沿 uv.y 变长,靠近摄像机(y 大)最亮最长
+
+  // 涟漪扰动 uv.x -> 让倒影抖动像水面
+  float ripple = cnoise(vec2(uv.x * 6.0, uv.y * 3.0 - uTime * 0.35)) * 0.05;
+  ripple += cnoise(vec2(uv.x * 18.0, uv.y * 12.0 - uTime * 0.6)) * 0.02;
+  float x = uv.x + ripple;
+
+  // 竖条:多条不同位置的高斯,颜色左品红右青
+  float smear = 0.0;
+  vec3 smearCol = vec3(0.0);
+  // 6 条固定位置的倒影带
+  for (int i = 0; i < 6; i++) {
+    float fi = float(i);
+    float cx = 0.15 + fi * 0.13 + sin(fi * 2.3) * 0.02;
+    float w = 0.02 + mod(fi, 3.0) * 0.008;
+    float d = abs(x - cx);
+    float band = exp(-pow(d / w, 2.0));
+    // 沿 y 拉长:远端弱近端强
+    float lengthAlong = smoothstep(0.0, 1.0, uv.y);
+    band *= lengthAlong * lengthAlong;
+    // 音频呼吸
+    float drive = mix(uBass, uMid, mod(fi, 2.0));
+    band *= 0.4 + drive * 0.9 + uRms * 0.3;
+    vec3 c = (fi < 3.0) ? uMagenta : uCyan;
+    smear += band;
+    smearCol += c * band;
+  }
+
+  // 靠近摄像机(uv.y 大)整体加一层微光,像湿地反光的整片亮
+  float wetGlow = smoothstep(0.3, 1.0, uv.y) * 0.15;
+  smearCol += mix(uMagenta, uCyan, 0.5) * wetGlow * (0.4 + uRms * 0.4);
+
+  // 中心带压弱一点(歌手站位)
+  float centerFall = smoothstep(0.0, 0.35, abs(uv.x - 0.5));
+  smearCol *= 0.4 + centerFall * 0.9;
+  smear *= 0.4 + centerFall * 0.9;
+
+  float alpha = clamp(smear * 0.7 + wetGlow * 0.6, 0.0, 0.75);
+  gl_FragColor = vec4(smearCol, alpha);
+}
+`;
+
+function WetReflections({
+  featuresRef,
+}: {
+  featuresRef: React.RefObject<AudioFeatures>;
+}) {
+  const matRef = useRef<CSM<typeof THREE.MeshBasicMaterial>>(null);
+  const uniforms = useMemo(
+    () => ({
+      uTime: { value: 0 },
+      uRms: { value: 0 },
+      uMid: { value: 0 },
+      uBass: { value: 0 },
+      uMagenta: { value: NEON_MAGENTA.clone() },
+      uCyan: { value: NEON_CYAN.clone() },
+    }),
+    [],
+  );
+  const audio = useAudioResponse(featuresRef);
+
+  useFrame((state, delta) => {
+    const mat = matRef.current;
+    if (!mat) return;
+    audio.update(delta);
+    mat.uniforms.uTime!.value = state.clock.elapsedTime;
+    mat.uniforms.uRms!.value = audio.rms;
+    mat.uniforms.uMid!.value = audio.mid;
+    mat.uniforms.uBass!.value = audio.bass;
+  });
+
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -2.14, -4]} renderOrder={3}>
+      <planeGeometry args={[80, 40]} />
+      <CustomShaderMaterial
+        ref={matRef}
+        baseMaterial={THREE.MeshBasicMaterial}
+        vertexShader={skylineVertex}
+        fragmentShader={reflectionFragment}
+        uniforms={uniforms}
+        transparent
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+        toneMapped={false}
+      />
+    </mesh>
+  );
+}
+
 // ============ 主场景 ============
 export function NeonMetropolisScene({
   featuresRef,
@@ -616,8 +1139,10 @@ export function NeonMetropolisScene({
       <Suspense fallback={null}>
         {/* 远景 1: 极缓天幕(rms 呼吸) */}
         <AuroraSky featuresRef={featuresRef} theme={CITY_SKY} />
-        {/* 远景 2: 程序化剪影天际线(fbm,替代 box 阵列) */}
+        {/* 远景 2: 程序化剪影天际线(fbm) */}
         <FarSilhouette featuresRef={featuresRef} />
+        {/* 远景 3: 中景剪影(拉开纵深过渡,shader 软层) */}
+        <MidSilhouette featuresRef={featuresRef} />
 
         {/* 舞台光:冷月光 + 侧向品红/青 rim */}
         <ambientLight intensity={0.14} color="#1a1a3a" />
@@ -625,22 +1150,32 @@ export function NeonMetropolisScene({
         <pointLight position={[8, 3, 2]} intensity={1.4} color="#ff2f8e" distance={26} />
         <pointLight position={[-8, 2, 2]} intensity={1.0} color="#22d3ee" distance={26} />
 
-        {/* 近景锚点楼(唯一硬几何族) */}
+        {/* 近景锚点楼(唯一硬几何族,14栋,左右分簇,中心留空) */}
         <AnchorBuildings
           featuresRef={featuresRef}
           intensity={intensity}
           anchors={anchors}
         />
-        {/* 稀疏窗灯(accent 点,径向衰减非网格) */}
+        {/* 稀疏窗灯(accent 点,径向衰减非网格,mid 驱动生活感律动) */}
         <AnchorWindows
           featuresRef={featuresRef}
           intensity={intensity}
           anchors={anchors}
         />
-        {/* 招牌 & 车流 & 湿街(accent 层,不算硬几何) */}
+
+        {/* 体积光束/大气雾(中近之间纵深,mid 呼吸,软 shader 层) */}
+        <LightBeams featuresRef={featuresRef} />
+
+        {/* 招牌 & 车流(accent 层,不算硬几何) */}
         <NeonBillboards featuresRef={featuresRef} intensity={intensity} />
         <TrafficStreaks featuresRef={featuresRef} intensity={intensity} />
+
+        {/* 湿街地面 + 霓虹倒影(shader 软叠层) */}
         <WetStreet featuresRef={featuresRef} intensity={intensity} />
+        <WetReflections featuresRef={featuresRef} />
+
+        {/* 雨夜氛围(最前的斜向雨丝 + 雨雾,软 shader 层) */}
+        <RainVeil featuresRef={featuresRef} />
 
         {/* 电影级后期 */}
         <EffectComposer multisampling={2}>
