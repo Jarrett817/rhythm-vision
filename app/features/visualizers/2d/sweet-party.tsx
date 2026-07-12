@@ -130,30 +130,30 @@ function createHeartBody(x: number, y: number, size: number) {
   return Matter.Bodies.circle(x, y, size * 0.35, {
     restitution: 0.15,
     friction: 0.08,       // 低摩擦 → 斜坡上自然滚
-    frictionAir: 0.008,
+    frictionAir: 0.015,   // 加大空气阻力让下落更飘
     density: 0.0008,
     chamfer: { radius: 1 },
   });
 }
 
-function spawnHeart(width: number, height: number): Particle {
-  const size = 28 + Math.random() * 28;
+function spawnHeart(width: number, height: number, speedMul = 1): Particle {
+  const size = 22 + Math.random() * 22; // 稍微小一点
   // 全屏幕宽度随机生成（不再刻意留白）
   const nx = 0.04 + Math.random() * 0.92;
   const x = size + nx * (width - size * 2);
-  const y = -size - Math.random() * 200;
+  const y = -size - Math.random() * 160;
   const body = createHeartBody(x, y, size);
   Matter.Body.setVelocity(body, {
-    x: (Math.random() - 0.5) * 0.8,
-    y: 0.5 + Math.random() * 1.2,
+    x: (Math.random() - 0.5) * 0.3,
+    y: (0.15 + Math.random() * 0.25) * speedMul, // 下落速度变慢
   });
-  Matter.Body.setAngularVelocity(body, (Math.random() - 0.5) * 0.08);
+  Matter.Body.setAngularVelocity(body, (Math.random() - 0.5) * 0.03);
   const hue = CANDY_HUES[Math.floor(Math.random() * CANDY_HUES.length)]!;
   return { size, hue, body, seed: Math.random() * 1000, landed: false, landTime: 0 };
 }
 
-function addHeart(particles: Particle[], world: Matter.World, width: number, height: number) {
-  const p = spawnHeart(width, height);
+function addHeart(particles: Particle[], world: Matter.World, width: number, height: number, speedMul = 1) {
+  const p = spawnHeart(width, height, speedMul);
   particles.push(p);
   Matter.Composite.add(world, p.body);
 }
@@ -399,9 +399,31 @@ export function SweetPartyScene(props: VisualizerProps) {
         const garland = new Graphics();
         const floor = new Graphics();
         const lollipops = new Graphics();
+        const starLayer = new Graphics();
         const glowShapes = new Graphics();
         const shapes = new Graphics();
-        app.stage.addChild(backdrop, mist, pillars, floor, garland, lollipops, glowShapes, shapes);
+        app.stage.addChild(backdrop, mist, pillars, floor, garland, lollipops, starLayer, glowShapes, shapes);
+
+        // 星星柔和发光
+        starLayer.filters = [new GlowFilter({
+          distance: 8,
+          outerStrength: 1.0,
+          innerStrength: 0,
+          color: 0xffd6e8,
+          quality: 0.2,
+          alpha: 0.6,
+        }) as unknown as Filter];
+
+        // 背景预生成星星：散布在天空区域，treble时闪烁
+        const stars = Array.from({ length: 45 }, () => ({
+          nx: Math.random(),
+          ny: 0.04 + Math.random() * 0.48,
+          r: 0.6 + Math.random() * 1.6,
+          baseAlpha: 0.15 + Math.random() * 0.3,
+          phase: Math.random() * Math.PI * 2,
+          speed: 0.4 + Math.random() * 1.2,
+          hue: CANDY_HUES[Math.floor(Math.random() * CANDY_HUES.length)]!,
+        }));
 
         mist.filters = [new BlurFilter({ strength: 28, quality: 3 })];
         pillars.filters = [new BlurFilter({ strength: 10, quality: 2 })];
@@ -439,7 +461,8 @@ export function SweetPartyScene(props: VisualizerProps) {
         shapes.filters = [rgbFilter as unknown as Filter];
 
         const audio = createAudioResponse(featuresRef);
-        const engine = Matter.Engine.create({ gravity: { x: 0, y: 1.4, scale: 0.001 } });
+        // 基础重力调小，随音乐能量加速
+        const engine = Matter.Engine.create({ gravity: { x: 0, y: 0.7, scale: 0.001 } });
         const world = engine.world;
         const particles: Particle[] = [];
         let bounds = { width: 0, height: 0 };
@@ -458,8 +481,8 @@ export function SweetPartyScene(props: VisualizerProps) {
 
         rebuildWalls(app.renderer.width, app.renderer.height);
         // 开场少量
-        for (let i = 0; i < 8; i++) {
-          addHeart(particles, world, app.renderer.width, app.renderer.height);
+        for (let i = 0; i < 5; i++) {
+          addHeart(particles, world, app.renderer.width, app.renderer.height, 0.8);
         }
 
         const tick = () => {
@@ -474,32 +497,54 @@ export function SweetPartyScene(props: VisualizerProps) {
             rebuildWalls(width, height);
           }
 
+          // 动态重力：无音乐时慢飘（像羽毛），有音乐时随rms和bass加快下落
+          const section = audio.section;
+          let fallSpeedMul = 0.6; // 基础慢
+          let gravityY = 0.5;
+          if (section === "intro" || section === "breakdown") {
+            fallSpeedMul = 0.5;
+            gravityY = 0.35;
+          } else if (section === "verse") {
+            fallSpeedMul = 0.8;
+            gravityY = 0.6;
+          } else if (section === "buildup") {
+            fallSpeedMul = 0.9 + audio.tension * 0.5;
+            gravityY = 0.6 + audio.tension * 0.3;
+          } else if (section === "drop") {
+            fallSpeedMul = 1.3 + audio.release * 0.4;
+            gravityY = 0.9 + audio.release * 0.3;
+          }
+          // rms微调
+          fallSpeedMul *= 0.7 + rms * 0.6;
+          gravityY += rms * 0.2 + bass * 0.15;
+          engine.gravity.y = Math.max(0.2, Math.min(1.3, gravityY));
+
           // 节拍震动
           if ((audio.impact > 0.25 || beat) && rms > 0.05) {
-            shake = Math.max(shake, audio.impact * 10 * intensity);
+            shake = Math.max(shake, audio.impact * 8 * intensity);
           }
           shake *= 0.85;
 
           // 粒子数目标：音乐时更多
           const musicOn = rms > 0.04;
           const targetCap = musicOn
-            ? Math.min(PARTICLE_SOFT_CAP, 80 + Math.floor(rms * 100 + treble * 60 * intensity))
+            ? Math.min(PARTICLE_SOFT_CAP, 70 + Math.floor(rms * 80 + treble * 50 * intensity))
             : PARTICLE_IDLE_CAP;
 
-          // 生成频率：更密
+          // 生成频率
           const under = particles.length < targetCap;
-          const baseRate = musicOn ? 0.22 + treble * 0.15 * intensity + rms * 0.12 : 0.04;
+          const baseRate = musicOn ? 0.12 + treble * 0.1 * intensity + rms * 0.08 : 0.025;
 
           if (under && Math.random() < baseRate) {
-            addHeart(particles, world, width, height);
+            addHeart(particles, world, width, height, fallSpeedMul);
           }
 
           // 节拍爆发
           if (musicOn && (Boolean(beat) || audio.impact > 0.35)) {
-            const burstMax = 2 + Math.floor(audio.impact * 3 * intensity);
+            const burstMax = 1 + Math.floor(audio.impact * 2 * intensity);
             for (let b = 0; b < burstMax; b++) {
               if (particles.length >= PARTICLE_SOFT_CAP) break;
-              addHeart(particles, world, width, height);
+              addHeart(particles, world, width, height, fallSpeedMul * 1.2);
             }
           }
 
@@ -575,12 +620,35 @@ export function SweetPartyScene(props: VisualizerProps) {
           garland.clear();
           floor.clear();
           lollipops.clear();
+          starLayer.clear();
           glowShapes.clear();
           shapes.clear();
 
           // 远景
           drawGradientBackdrop(backdrop, width, height, rms);
           drawCreamMist(mist, width, height, t, rms, mid, bass, intensity);
+
+          // 背景星星
+          const starTwinkle = 0.5 + treble * 1.2 + rms * 0.3;
+          for (const s of stars) {
+            const twinkle = 0.35 + 0.65 * Math.abs(Math.sin(t * s.speed + s.phase));
+            const a = s.baseAlpha * twinkle * starTwinkle;
+            const col = hslNumber(s.hue, 50, 75);
+            starLayer.circle(s.nx * width, s.ny * height, s.r * (0.7 + twinkle * 0.5));
+            starLayer.fill({ color: col, alpha: Math.min(0.9, a) });
+            // 十字光芒（亮星）
+            if (s.r > 1.2 && twinkle > 0.6) {
+              const sx = s.nx * width;
+              const sy = s.ny * height;
+              const len = s.r * 5 * twinkle;
+              starLayer.moveTo(sx - len, sy);
+              starLayer.lineTo(sx + len, sy);
+              starLayer.stroke({ color: col, alpha: a * 0.3, width: 0.8 });
+              starLayer.moveTo(sx, sy - len);
+              starLayer.lineTo(sx, sy + len);
+              starLayer.stroke({ color: col, alpha: a * 0.3, width: 0.8 });
+            }
+          }
 
           // 中景：光柱
           drawSoftPillars(pillars, width, height, t, mid, rms, intensity);

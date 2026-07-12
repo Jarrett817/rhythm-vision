@@ -1,4 +1,4 @@
-import { Container, Graphics, type Filter } from "pixi.js";
+import { Container, BlurFilter, Graphics, type Filter } from "pixi.js";
 import { GlowFilter } from "@pixi/filter-glow";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
 import { PixiVisualizer } from "~/features/visualizers/shared/pixi-visualizer";
@@ -57,8 +57,11 @@ export function GentleTideScene(props: VisualizerProps) {
           quality: 0.2,
           alpha: 0.55,
         });
+        // 波浪层加轻微模糊，柔化硬边，去掉几何堆叠感
+        const wavesBlur = new BlurFilter({ strength: 2, quality: 2 });
         moon.filters = [moonGlow as unknown as Filter];
         foam.filters = [foamGlow as unknown as Filter];
+        waves.filters = [wavesBlur as unknown as Filter];
 
         const audio = createAudioResponse(featuresRef);
 
@@ -201,20 +204,18 @@ export function GentleTideScene(props: VisualizerProps) {
               horizonY + (height - horizonY) * (0.15 + depth * 0.78);
             // 波幅：远层小、近层大；rms 微调；beat 时通过 ripple 爆发
             const amp =
-              (6 + depth * 22 + smoothRms * 12 + ripple * 18 * depth) *
+              (4 + depth * 18 + smoothRms * 10 + ripple * 16 * depth) *
               intensity *
-              (0.85 + breath * 0.25);
-            // 速度：主要是 t 驱动，mid 只加一点点点缀 → 不 itch；段落驱动全局速度
-            const speed = (0.18 + depth * 0.12 + smoothMid * 0.18) * sectionSpeed;
+              (0.8 + breath * 0.2);
+            // 速度：主要是 t 驱动，mid 只加一点点点缀；段落驱动全局速度
+            const speed = (0.14 + depth * 0.1 + smoothMid * 0.14) * sectionSpeed;
             waves.moveTo(0, height);
-            let prevX = 0;
-            let prevY = yBase;
-            for (let x = 0; x <= width; x += 8) {
+            for (let x = 0; x <= width; x += 3) {
               const wave =
-                Math.sin(x * 0.0035 + t * speed) * amp +
-                Math.sin(x * 0.011 - t * 0.18 + layer * 1.3) *
-                  (3 + smoothMid * 4) +
-                Math.cos(x * 0.002 + t * 0.06) * 3;
+                Math.sin(x * 0.003 + t * speed + layer * 0.8) * amp +
+                Math.sin(x * 0.009 - t * 0.15 + layer * 1.3) *
+                  (2 + smoothMid * 3) +
+                Math.cos(x * 0.0018 + t * 0.05 + layer * 0.5) * 2;
               const y = yBase + wave;
               waves.lineTo(x, y);
 
@@ -222,25 +223,21 @@ export function GentleTideScene(props: VisualizerProps) {
               if (
                 layer >= 2 &&
                 ripple > 0.15 &&
-                x % 48 === 0 &&
-                Math.abs(y - prevY) > 2
+                x % 36 === 0
               ) {
-                foam.circle(x, y, 1.2 + ripple * 2.4);
+                foam.circle(x, y - 1, 0.8 + ripple * 1.8);
                 foam.fill({
                   color: MOON_SILVER,
-                  alpha: 0.3 * ripple + smoothTreble * 0.2,
+                  alpha: 0.25 * ripple + smoothTreble * 0.15,
                 });
               }
-              prevX = x;
-              prevY = y;
             }
             waves.lineTo(width, height);
             waves.closePath();
 
             // 锁色：从 TIDE_INDIGO 到 DEEP_NAVY 之间插值，靠 alpha 分层
-            // 远层偏 indigo(亮),近层偏 navy(暗) —— 给纵深感
             const color = depth < 0.5 ? TIDE_INDIGO : DEEP_NAVY;
-            const alpha = 0.32 + depth * 0.28 + smoothRms * 0.05;
+            const alpha = (0.22 + depth * 0.22 + smoothRms * 0.04) * sectionBrightness;
             waves.fill({ color, alpha });
           }
 
