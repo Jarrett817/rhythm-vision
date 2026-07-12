@@ -200,9 +200,18 @@ export function InkMistScene(props: VisualizerProps) {
           const mid = audio.mid;
           const treble = audio.treble;
           const rms = audio.rms;
+          // 歌曲段落驱动：水墨的浓淡/速度
+          let sectionAlpha = 0.75;
+          let sectionSpeedMul = 1.0;
+          let moonBoost = 1.0;
+          if (audio.section === "intro") { sectionAlpha = 0.5; sectionSpeedMul = 0.6; moonBoost = 0.7; }
+          else if (audio.section === "verse") { sectionAlpha = 0.75; sectionSpeedMul = 0.9; moonBoost = 1.0; }
+          else if (audio.section === "buildup") { sectionAlpha = 0.75 + audio.tension * 0.15; sectionSpeedMul = 1.0 + audio.tension * 0.4; moonBoost = 1.0 + audio.tension * 0.2; }
+          else if (audio.section === "drop") { sectionAlpha = 1.0; sectionSpeedMul = 1.2; moonBoost = 1.3; }
+          else if (audio.section === "breakdown") { sectionAlpha = 0.45; sectionSpeedMul = 0.5; moonBoost = 0.6; }
 
-          // 时间步：静默时接近恒定慢流；只在有能量时才略加速
-          t += dt * (0.12 + rms * 0.45);
+          // 时间步：静默时接近恒定慢流；只在有能量时才略加速；段落驱动全局速度
+          t += dt * (0.12 + rms * 0.45) * sectionSpeedMul;
 
           if (width !== paperW || height !== paperH) drawPaper(width, height);
           sky.clear();
@@ -304,26 +313,26 @@ export function InkMistScene(props: VisualizerProps) {
           }
 
           // ==================================================
-          // 月 —— 静态构图,只随 treble 微微闪耀（克制）
+          // 月 —— 段落驱动亮度，treble 微微闪耀（克制）
           // ==================================================
           const moonX = width * 0.72;
           const moonY = height * 0.16;
           const moonR = Math.min(width, height) * 0.045;
-          // 大晕
+          // 大晕：buildup时月晕扩大
           for (let ring = 5; ring >= 1; ring--) {
-            const rr = moonR * (1.4 + ring * 0.9);
+            const rr = moonR * (1.4 + ring * (0.9 + audio.tension * 0.5));
             moon.circle(moonX, moonY, rr);
             moon.fill({
               color: MOON_HALO,
-              alpha: (0.09 + treble * 0.05) / (ring + 0.5),
+              alpha: ((0.09 + treble * 0.05) / (ring + 0.5)) * moonBoost,
             });
           }
           // 月芯
           moon.circle(moonX, moonY, moonR);
-          moon.fill({ color: MOON_CORE, alpha: 0.85 + treble * 0.10 });
+          moon.fill({ color: MOON_CORE, alpha: (0.75 + treble * 0.10 + audio.release * 0.15) * moonBoost });
           // 月晕内圈
           moon.circle(moonX, moonY, moonR * 1.35);
-          moon.fill({ color: MOON_HALO, alpha: 0.20 });
+          moon.fill({ color: MOON_HALO, alpha: 0.20 * moonBoost });
 
           // ==================================================
           // 细雨 —— treble 驱动;静默时几乎不动

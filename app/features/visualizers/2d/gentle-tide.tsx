@@ -106,6 +106,20 @@ export function GentleTideScene(props: VisualizerProps) {
           smoothMid += (audio.mid - smoothMid) * Math.min(1, delta * 4);
           smoothTreble += (audio.treble - smoothTreble) * Math.min(1, delta * 8);
 
+          // 歌曲段落驱动
+          const section = audio.section;
+          const tension = audio.tension;
+          const release = audio.release;
+
+          // 段落映射为全局亮度系数：intro暗 → buildup渐亮 → drop亮 → breakdown渐暗
+          let sectionBrightness = 0.7;
+          let sectionSpeed = 1.0;
+          if (section === "intro") { sectionBrightness = 0.5; sectionSpeed = 0.7; }
+          else if (section === "verse") { sectionBrightness = 0.7; sectionSpeed = 0.9; }
+          else if (section === "buildup") { sectionBrightness = 0.7 + tension * 0.2; sectionSpeed = 1.0 + tension * 0.3; }
+          else if (section === "drop") { sectionBrightness = 0.9 + release * 0.1; sectionSpeed = 1.2; }
+          else if (section === "breakdown") { sectionBrightness = 0.45; sectionSpeed = 0.6; }
+
           // 呼吸感：无音乐时靠时间正弦维持，有音乐时叠加 rms
           const idleBreath = 0.5 + Math.sin(t * 0.6) * 0.05;
           breath += (idleBreath + smoothRms * 0.35 - breath) * Math.min(1, delta * 2);
@@ -139,20 +153,23 @@ export function GentleTideScene(props: VisualizerProps) {
             intensity * 0.75,
           );
 
-          // ============ 月亮（mid 驱动微微呼吸，保持稳定为主）============
+          // ============ 月亮（mid 驱动微微呼吸，段落驱动亮度）============
           moon.clear();
           const moonX = width * 0.74;
           const moonY = height * 0.22 + Math.sin(t * 0.4) * 4;
           const moonBaseR = Math.min(width, height) * 0.045;
-          const moonR = moonBaseR * (1 + smoothMid * 0.08 + breath * 0.04);
-          // 月晕外层
-          moon.circle(moonX, moonY, moonR * 2.6);
-          moon.fill({ color: MOON_SILVER, alpha: 0.04 + smoothRms * 0.06 });
+          const moonR = moonBaseR * (1 + smoothMid * 0.08 + breath * 0.04 + tension * 0.04);
+          // 月晕外层（buildup时月晕扩大，drop时最亮）
+          moon.circle(moonX, moonY, moonR * (2.6 + tension * 1.2));
+          moon.fill({ color: MOON_SILVER, alpha: (0.04 + smoothRms * 0.06) * sectionBrightness });
           moon.circle(moonX, moonY, moonR * 1.6);
-          moon.fill({ color: MOON_SILVER, alpha: 0.09 + smoothRms * 0.08 });
-          // 月本体
+          moon.fill({ color: MOON_SILVER, alpha: (0.09 + smoothRms * 0.08) * sectionBrightness });
+          // 月本体（drop时亮度提升）
           moon.circle(moonX, moonY, moonR);
-          moon.fill({ color: MOON_SILVER, alpha: 0.55 });
+          moon.fill({ color: MOON_SILVER, alpha: (0.45 + release * 0.2) * sectionBrightness });
+          // Glow强度：drop时最亮
+          moonGlow.outerStrength = 1.0 + release * 1.2;
+          moonGlow.alpha = 0.6 + release * 0.4;
 
           // ============ 海平线锚点 + 月光倒影柱（跟人声轻微摇曳）============
           reflection.clear();
@@ -187,8 +204,8 @@ export function GentleTideScene(props: VisualizerProps) {
               (6 + depth * 22 + smoothRms * 12 + ripple * 18 * depth) *
               intensity *
               (0.85 + breath * 0.25);
-            // 速度：主要是 t 驱动，mid 只加一点点点缀 → 不 itch
-            const speed = 0.18 + depth * 0.12 + smoothMid * 0.18;
+            // 速度：主要是 t 驱动，mid 只加一点点点缀 → 不 itch；段落驱动全局速度
+            const speed = (0.18 + depth * 0.12 + smoothMid * 0.18) * sectionSpeed;
             waves.moveTo(0, height);
             let prevX = 0;
             let prevY = yBase;
