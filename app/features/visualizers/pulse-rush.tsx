@@ -23,6 +23,7 @@ import { SceneSpringEntry } from "~/features/visualizers/shared/scene-spring-ent
 import { SceneEnvironment } from "~/features/visualizers/shared/scene-environment";
 import { useAudioResponse, SmoothValue } from "~/features/visualizers/shared/audio-response";
 import { GLSL_CLASSIC_NOISE_3D } from "~/lib/glsl/noise-chunks";
+import { StageVignette, StageFloorGlow } from "~/features/visualizers/shared/stage-compositor";
 
 // 锁色：深紫震金（禁彩虹）
 const DEEP_VIOLET = new THREE.Color("#2a0a4a");
@@ -408,8 +409,14 @@ export function PulseRushScene({
         {/* 近景：drop 瞬时爆发（beat-only，平时隐藏） */}
         <BassShockwaves featuresRef={featuresRef} intensity={intensity} />
 
+        {/* 舞台地屏反射光 */}
+        <StageFloorGlow featuresRef={featuresRef} color="#2a0a4a" />
+
         {/* 歌曲段落驱动：相机随intro/buildup/drop/breakdown演化 */}
         <PulseSceneEvolver featuresRef={featuresRef} />
+
+        {/* 舞台边缘暗角+中央避位（保护歌手区域不被遮挡） */}
+        <StageVignette featuresRef={featuresRef} />
 
         <EffectComposer multisampling={2}>
           <DepthOfField

@@ -9,6 +9,7 @@ import { SceneSpringEntry } from "~/features/visualizers/shared/scene-spring-ent
 import { SceneEnvironment } from "~/features/visualizers/shared/scene-environment";
 import { GradientBackdrop } from "~/features/visualizers/shared/gradient-backdrop";
 import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postprocessing";
+import { StageVignette, StageFloorGlow } from "~/features/visualizers/shared/stage-compositor";
 import {
   useAudioResponse,
   SmoothValue,
@@ -523,8 +524,14 @@ export function EtherealGlowScene({
             {/* 节拍爆发环 */}
             <BeatShockPool featuresRef={featuresRef} intensity={intensity} />
 
+            {/* 舞台地屏反射光 */}
+            <StageFloorGlow featuresRef={featuresRef} color="#0a1530" />
+
             {/* 歌曲段落驱动相机演化 */}
             <EtherealSceneEvolver featuresRef={featuresRef} />
+
+            {/* 舞台边缘暗角+中央避位（保护歌手区域不被遮挡） */}
+            <StageVignette featuresRef={featuresRef} />
 
             {/* 电影级后期 */}
             <DreamyPostProcessing intensity={intensity} />

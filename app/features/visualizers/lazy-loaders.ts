@@ -22,10 +22,6 @@ export const VISUALIZER_LOADERS: Record<VisualizerId, Loader> = {
     import("~/features/visualizers/ethereal-glow").then((m) => ({
       default: m.EtherealGlowScene,
     })),
-  "neon-metropolis": () =>
-    import("~/features/visualizers/neon-metropolis").then((m) => ({
-      default: m.NeonMetropolisScene,
-    })),
   "festival-stage": () =>
     import("~/features/visualizers/festival-stage").then((m) => ({
       default: m.FestivalStageScene,

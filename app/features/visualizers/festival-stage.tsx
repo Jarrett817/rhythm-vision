@@ -5,6 +5,7 @@ import CustomShaderMaterial from "three-custom-shader-material";
 import CSM from "three-custom-shader-material/vanilla";
 import { Sparkles } from "@react-three/drei";
 import { DreamyPostProcessing } from "~/features/visualizers/shared/dreamy-postprocessing";
+import { StageVignette, StageFloorGlow } from "~/features/visualizers/shared/stage-compositor";
 import { useAudioResponse, SmoothValue } from "~/features/visualizers/shared/audio-response";
 import type { AudioFeatures } from "~/lib/audio/types";
 import type { VisualizerProps } from "~/features/visualizers/catalog";
@@ -904,6 +905,9 @@ export function FestivalStageScene({
           densityRef={petalDensityRef}
         />
 
+        {/* 舞台地屏反射光（暖金色，匹配星光舞台色调） */}
+        <StageFloorGlow featuresRef={featuresRef} color="#2a1508" />
+
         {/* ============ 段落演化器：相机/雾/亮度 ============ */}
         <SceneEvolver
           featuresRef={featuresRef}
@@ -911,6 +915,9 @@ export function FestivalStageScene({
           petalDensityRef={petalDensityRef}
           coreBrightnessRef={coreBrightnessRef}
         />
+
+        {/* 舞台边缘暗角+中央避位（保护歌手区域不被遮挡） */}
+        <StageVignette featuresRef={featuresRef} />
 
         {/* ============ 电影感柔和后处理 ============ */}
         <DreamyPostProcessing intensity={intensity} />

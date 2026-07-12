@@ -6,7 +6,6 @@ export type VisualizerId =
   | "pulse-rush"
   | "ink-mist"
   | "ethereal-glow"
-  | "neon-metropolis"
   | "festival-stage"
   | "sweet-party";
 
@@ -65,15 +64,6 @@ export const VISUALIZER_META: VisualizerMeta[] = [
     imagery: "极光圈绕光核，星尘缓慢流转",
     audioMap: "低频光核 · 中频环扩 · 高频星尘",
     description: "慢速呼吸感，适合冥想式慢歌",
-  },
-  {
-    id: "neon-metropolis",
-    name: "霓虹都市",
-    dimension: "3d",
-    category: "landscape",
-    imagery: "雨夜天际线，窗灯与湿街霓虹",
-    audioMap: "低频楼影 · 中频窗灯 · 高频招牌",
-    description: "3D 都市夜景",
   },
   {
     id: "festival-stage",
